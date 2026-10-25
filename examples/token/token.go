@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -44,8 +45,8 @@ func main() {
 		}
 	`)
 
-	client := apns2.NewTokenClient(token).Production()
-	res, err := client.Push(notification)
+	client := apns2.NewTokenClient(token, apns2.WithHost(apns2.HostProduction))
+	res, err := client.Push(context.Background(), notification)
 	if err != nil {
 		log.Fatal("Error:", err)
 	}

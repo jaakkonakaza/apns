@@ -2,7 +2,6 @@ package apns2
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 )
 
@@ -133,7 +132,7 @@ type Response struct {
 
 	// If the value of StatusCode is 410, this is the last time at which APNs
 	// confirmed that the device token was no longer valid for the topic.
-	Timestamp Time
+	Timestamp time.Time
 
 	// An identifier that is only available in the Developement enviroment. Use
 	// this to query Delivery Log information for the corresponding notification
@@ -145,19 +144,4 @@ type Response struct {
 // This is the same as checking if the StatusCode == 200.
 func (c *Response) Sent() bool {
 	return c.StatusCode == StatusSent
-}
-
-// Time represents a device uninstall time
-type Time struct {
-	time.Time
-}
-
-// UnmarshalJSON converts an epoch date into a Time struct.
-func (t *Time) UnmarshalJSON(b []byte) error {
-	ts, err := strconv.ParseInt(string(b), 10, 64)
-	if err != nil {
-		return err
-	}
-	t.Time = time.UnixMilli(ts)
-	return nil
 }

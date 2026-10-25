@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -39,11 +40,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parse proxy URL: %w", err)
 	}
-	client := apns2.NewClient(certificate)
+	client := apns2.NewClient(certificate,
+		apns2.WithProxy(http.ProxyURL(proxyURL)),
+		apns2.WithIdleConnTimeout(60*time.Second),
+	)
 	defer client.CloseIdleConnections()
-	transport := client.HTTPClient.Transport.(*http.Transport)
-	transport.Proxy = http.ProxyURL(proxyURL)
-	transport.IdleConnTimeout = 60 * time.Second
 
 	notification := &apns2.Notification{}
 	notification.DeviceToken = *token
@@ -55,7 +56,7 @@ func run() error {
 		}
 	`)
 
-	res, err := client.Push(notification)
+	res, err := client.Push(context.Background(), notification)
 	if err != nil {
 		return fmt.Errorf("push notification: %w", err)
 	}

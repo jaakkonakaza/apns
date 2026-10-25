@@ -52,6 +52,7 @@ uploader pins, then run `make check` before committing the updates.
 package main
 
 import (
+  "context"
   "log"
   "fmt"
 
@@ -71,12 +72,9 @@ func main() {
   notification.Topic = "com.sideshow.Apns2"
   notification.Payload = []byte(`{"aps":{"alert":"Hello!"}}`) // See Payload section below
 
-  // If you want to test push notifications for builds running directly from XCode (Development), use
-  // client := apns2.NewClient(cert).Development()
-  // For apps published to the app store or installed as an ad-hoc distribution use Production()
-
-  client := apns2.NewClient(cert).Production()
-  res, err := client.Push(notification)
+  // Use HostDevelopment for builds installed directly from Xcode.
+  client := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+  res, err := client.Push(context.Background(), notification)
 
   if err != nil {
     log.Fatal("Error:", err)
@@ -107,7 +105,7 @@ token := &token.Token{
 ...
 
 client := apns2.NewTokenClient(token)
-res, err := client.Push(notification)
+res, err := client.Push(context.Background(), notification)
 ```
 
 - You can use one APNs signing key to authenticate tokens for multiple apps.
@@ -144,7 +142,7 @@ You can use raw bytes for the `notification.Payload` as above, or you can use th
 payload := payload.NewPayload().Alert("hello").Badge(1).Custom("key", "val")
 
 notification.Payload = payload
-client.Push(notification)
+client.Push(context.Background(), notification)
 ```
 
 Refer to the [payload](https://godoc.org/github.com/sideshow/apns2/payload) docs for more info.
@@ -159,7 +157,7 @@ APNS/2 draws the distinction between a valid response from Apple indicating whet
 To check if a `Notification` was successfully sent;
 
 ```go
-res, err := client.Push(notification)
+res, err := client.Push(context.Background(), notification)
 if err != nil {
   log.Println("There was an error", err)
   return
@@ -174,16 +172,27 @@ if res.Sent() {
 
 ## Context & Timeouts
 
-For better control over request cancellations and timeouts APNS/2 supports
-contexts. Using a context can be helpful if you want to cancel all pushes when
-the parent process is cancelled, or need finer grained control over individual
-push timeouts. See the [Google post](https://blog.golang.org/context) for more
-information on contexts.
+Configure each client when creating it:
 
 ```go
-ctx, cancel = context.WithTimeout(context.Background(), 10 * time.Second)
-res, err := client.PushWithContext(ctx, notification)
+client := apns2.NewTokenClient(authToken,
+  apns2.WithHost(apns2.HostProduction),
+  apns2.WithTimeout(30*time.Second),
+  apns2.WithDialTimeout(5*time.Second),
+  apns2.WithReadIdleTimeout(15*time.Second),
+)
+```
+
+Other options cover proxies, TLS settings, custom dialing and custom HTTP
+clients. See the [package docs](https://godoc.org/github.com/sideshow/apns2) for
+details. `NewClientManager` accepts the same options.
+
+Every push takes a context for cancellation and individual request deadlines:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 10 * time.Second)
 defer cancel()
+res, err := client.Push(ctx, notification)
 ```
 
 ## Speed & Performance

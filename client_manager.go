@@ -55,12 +55,22 @@ type ClientManager struct {
 // Having multiple clients per certificate in the manager is not allowed.
 //
 // By default, MaxSize is 64, MaxAge is 10 minutes, and Factory always returns
-// a Client with default options.
-func NewClientManager() *ClientManager {
+// a Client with the supplied constructor options. WithHTTPClient is unsupported
+// and causes a panic. Use Factory to supply a separate HTTP client for each
+// certificate.
+func NewClientManager(options ...ClientOption) *ClientManager {
+	options = append([]ClientOption(nil), options...)
+	config := defaultClientConfig()
+	for _, option := range options {
+		option(&config)
+	}
+	if config.httpClient != nil {
+		panic("apns2: NewClientManager does not support WithHTTPClient, use Factory for per-certificate HTTP clients")
+	}
 	manager := &ClientManager{
 		MaxSize: 64,
 		MaxAge:  10 * time.Minute,
-		Factory: NewClient,
+		Factory: func(certificate tls.Certificate) *Client { return NewClient(certificate, options...) },
 	}
 
 	manager.initInternals()
@@ -185,7 +195,7 @@ func (m *ClientManager) removeElementLocked(e *list.Element) *Client {
 }
 
 func closeClientIdleConnections(client *Client) {
-	if client != nil && client.HTTPClient != nil {
+	if client != nil && client.httpClient != nil {
 		client.CloseIdleConnections()
 	}
 }

@@ -1,4 +1,4 @@
-package token_test
+package token
 
 import (
 	"crypto/ecdsa"
@@ -14,14 +14,12 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sideshow/apns2/token"
 )
 
 // AuthToken
 
 func TestValidTokenFromP8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("testdata/authkey-valid.p8")
+	_, err := AuthKeyFromFile("testdata/authkey-valid.p8")
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
@@ -29,14 +27,14 @@ func TestValidTokenFromP8File(t *testing.T) {
 
 func TestValidTokenFromP8Bytes(t *testing.T) {
 	bytes, _ := os.ReadFile("testdata/authkey-valid.p8")
-	_, err := token.AuthKeyFromBytes(bytes)
+	_, err := AuthKeyFromBytes(bytes)
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
 }
 
 func TestNoSuchFileP8File(t *testing.T) {
-	token, err := token.AuthKeyFromFile("")
+	token, err := AuthKeyFromFile("")
 	if got, want := err.Error(), errors.New("open : no such file or directory").Error(); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -46,21 +44,21 @@ func TestNoSuchFileP8File(t *testing.T) {
 }
 
 func TestInvalidP8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("testdata/authkey-invalid.p8")
+	_, err := AuthKeyFromFile("testdata/authkey-invalid.p8")
 	if got := err; got == nil {
 		t.Error("unexpected nil")
 	}
 }
 
 func TestInvalidPKCS8P8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("testdata/authkey-invalid-pkcs8.p8")
+	_, err := AuthKeyFromFile("testdata/authkey-invalid-pkcs8.p8")
 	if got := err; got == nil {
 		t.Error("unexpected nil")
 	}
 }
 
 func TestInvalidECDSAP8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("testdata/authkey-invalid-ecdsa.p8")
+	_, err := AuthKeyFromFile("testdata/authkey-invalid-ecdsa.p8")
 	if got := err; got == nil {
 		t.Error("unexpected nil")
 	}
@@ -69,47 +67,46 @@ func TestInvalidECDSAP8File(t *testing.T) {
 // Expiry & Generation
 
 func TestExpired(t *testing.T) {
-	token := &token.Token{}
+	token := &Token{}
 	if !token.Expired() {
-		t.Error("token.Expired() = false, want true")
+		t.Error("Expired() = false, want true")
 	}
 }
 
 func TestNotExpired(t *testing.T) {
-	token := &token.Token{
-		IssuedAt: time.Now().Unix(),
+	token := &Token{
+		issuedAt: time.Now().Unix(),
 	}
 	if token.Expired() {
-		t.Error("token.Expired() = true, want false")
+		t.Error("Expired() = true, want false")
 	}
 }
 
 func TestExpiresBeforeAnHour(t *testing.T) {
-	token := &token.Token{
-		IssuedAt: time.Now().Add(-50 * time.Minute).Unix(),
+	token := &Token{
+		issuedAt: time.Now().Add(-50 * time.Minute).Unix(),
 	}
 	if !token.Expired() {
-		t.Error("token.Expired() = false, want true")
+		t.Error("Expired() = false, want true")
 	}
 }
 
-func TestGenerateIfExpired(t *testing.T) {
-	authKey, _ := token.AuthKeyFromFile("testdata/authkey-valid.p8")
-	token := &token.Token{
+func TestBearerRefresh(t *testing.T) {
+	authKey, _ := AuthKeyFromFile("testdata/authkey-valid.p8")
+	token := &Token{
 		AuthKey: authKey,
 	}
-	token.GenerateIfExpired()
-	if got, want := token.IssuedAt, time.Now().Unix(); !reflect.DeepEqual(got, want) {
+	if _, err := token.Bearer(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := token.issuedAt, time.Now().Unix(); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
 
 func TestGenerateWithNoAuthKey(t *testing.T) {
-	token := &token.Token{}
-	bool, err := token.Generate()
-	if bool {
-		t.Error("bool = true, want false")
-	}
+	token := &Token{}
+	err := token.Generate()
 	if got := err; got == nil {
 		t.Error("unexpected nil")
 	}
@@ -118,37 +115,33 @@ func TestGenerateWithNoAuthKey(t *testing.T) {
 func TestGenerateWithInvalidAuthKey(t *testing.T) {
 	pubkeyCurve := elliptic.P521()
 	privatekey, _ := ecdsa.GenerateKey(pubkeyCurve, rand.Reader)
-	token := &token.Token{
+	token := &Token{
 		AuthKey: privatekey,
 	}
-	bool, err := token.Generate()
-	if bool {
-		t.Error("bool = true, want false")
-	}
+	err := token.Generate()
 	if got := err; got == nil {
 		t.Error("unexpected nil")
 	}
 }
 
 func TestGenerateSignedToken(t *testing.T) {
-	key, err := token.AuthKeyFromFile("testdata/authkey-valid.p8")
+	key, err := AuthKeyFromFile("testdata/authkey-valid.p8")
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &token.Token{
+	provider := &Token{
 		AuthKey: key,
 		KeyID:   "key\"\\\n日本語",
 		TeamID:  "team\"\\\n日本語",
 	}
 	before := time.Now().Unix()
-	ok, err := provider.Generate()
-	if err != nil || !ok {
-		t.Fatalf("Generate() = %v, %v", ok, err)
+	if err := provider.Generate(); err != nil {
+		t.Fatalf("Generate() = %v", err)
 	}
-	if provider.IssuedAt < before || provider.IssuedAt > time.Now().Unix() {
-		t.Fatalf("unexpected issue time: %d", provider.IssuedAt)
+	if provider.issuedAt < before || provider.issuedAt > time.Now().Unix() {
+		t.Fatalf("unexpected issue time: %d", provider.issuedAt)
 	}
-	parts := strings.Split(provider.Bearer, ".")
+	parts := strings.Split(provider.bearer, ".")
 	if len(parts) != 3 {
 		t.Fatalf("token has %d segments, want 3", len(parts))
 	}
@@ -177,7 +170,7 @@ func TestGenerateSignedToken(t *testing.T) {
 	if err := json.Unmarshal(decode(parts[1]), &claims); err != nil {
 		t.Fatal(err)
 	}
-	if claims.Issuer != provider.TeamID || claims.IssuedAt != provider.IssuedAt {
+	if claims.Issuer != provider.TeamID || claims.IssuedAt != provider.issuedAt {
 		t.Errorf("unexpected JWT claims: %#v", claims)
 	}
 	signature := decode(parts[2])
@@ -194,7 +187,7 @@ func TestGenerateSignedToken(t *testing.T) {
 	if ecdsa.Verify(&key.PublicKey, digest[:], r, s) {
 		t.Fatal("JWT signature accepted tampered claims")
 	}
-	if bearer := provider.GenerateIfExpired(); bearer != provider.Bearer {
-		t.Errorf("cached token = %q; want %q", bearer, provider.Bearer)
+	if bearer, err := provider.Bearer(); err != nil || bearer != provider.bearer {
+		t.Errorf("cached token = %q; want %q", bearer, provider.bearer)
 	}
 }

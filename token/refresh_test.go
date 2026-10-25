@@ -1,4 +1,4 @@
-package token_test
+package token
 
 import (
 	"crypto/ecdsa"
@@ -10,8 +10,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/sideshow/apns2/token"
 )
 
 func TestAuthKeyRejectsWrongCurve(t *testing.T) {
@@ -25,8 +23,8 @@ func TestAuthKeyRejectsWrongCurve(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			loaded, err := token.AuthKeyFromBytes(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
-			if loaded != nil || !errors.Is(err, token.ErrAuthKeyCurve) {
+			loaded, err := AuthKeyFromBytes(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+			if loaded != nil || !errors.Is(err, ErrAuthKeyCurve) {
 				t.Fatalf("loaded key = %v, error = %v; want ErrAuthKeyCurve", loaded, err)
 			}
 		})
@@ -43,55 +41,71 @@ func TestRefreshReturnsSigningError(t *testing.T) {
 		key  *ecdsa.PrivateKey
 		want error
 	}{
-		{"nil key", nil, token.ErrAuthKeyNil},
-		{"wrong curve", wrongCurve, token.ErrAuthKeyCurve},
+		{"nil key", nil, ErrAuthKeyNil},
+		{"wrong curve", wrongCurve, ErrAuthKeyCurve},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := &token.Token{AuthKey: tc.key, IssuedAt: 1, Bearer: "expired"}
-			bearer, err := provider.GenerateIfExpiredWithError()
+			provider := &Token{AuthKey: tc.key, issuedAt: 1, bearer: "expired"}
+			bearer, err := provider.Bearer()
 			if bearer != "" || !errors.Is(err, tc.want) {
 				t.Fatalf("refresh = %q, %v; want empty bearer, %v", bearer, err, tc.want)
 			}
-			if provider.IssuedAt != 1 || provider.Bearer != "expired" {
+			if provider.issuedAt != 1 || provider.bearer != "expired" {
 				t.Fatal("failed signing changed cached state")
-			}
-			if bearer := provider.GenerateIfExpired(); bearer != "" {
-				t.Fatalf("legacy refresh returned expired bearer %q", bearer)
 			}
 		})
 	}
 }
 
 func TestRefreshGeneratesMissingBearer(t *testing.T) {
-	key, err := token.AuthKeyFromFile("testdata/authkey-valid.p8")
+	key, err := AuthKeyFromFile("testdata/authkey-valid.p8")
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &token.Token{AuthKey: key, IssuedAt: time.Now().Unix()}
-	bearer, err := provider.GenerateIfExpiredWithError()
+	provider := &Token{AuthKey: key, issuedAt: time.Now().Unix()}
+	bearer, err := provider.Bearer()
 	if err != nil || bearer == "" {
 		t.Fatalf("refresh = %q, %v", bearer, err)
 	}
-	cached, err := provider.GenerateIfExpiredWithError()
+	cached, err := provider.Bearer()
 	if err != nil || cached != bearer {
 		t.Fatalf("cached refresh = %q, %v; want %q", cached, err, bearer)
 	}
 }
 
-func TestConcurrentTokenMethods(t *testing.T) {
-	key, err := token.AuthKeyFromFile("testdata/authkey-valid.p8")
+func TestBearerRefreshesExpiredToken(t *testing.T) {
+	key, err := AuthKeyFromFile("testdata/authkey-valid.p8")
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &token.Token{AuthKey: key, KeyID: "key", TeamID: "team"}
+	provider := &Token{AuthKey: key, issuedAt: time.Now().Add(-TokenTimeout).Unix(), bearer: "expired"}
+	bearer, err := provider.Bearer()
+	if err != nil || bearer == "" || bearer == "expired" {
+		t.Fatalf("Bearer() = %q, %v", bearer, err)
+	}
+	if provider.Expired() {
+		t.Fatal("refreshed token is expired")
+	}
+	cached, err := provider.Bearer()
+	if err != nil || cached != bearer {
+		t.Fatalf("cached Bearer() = %q, %v, want %q", cached, err, bearer)
+	}
+}
+
+func TestConcurrentTokenMethods(t *testing.T) {
+	key, err := AuthKeyFromFile("testdata/authkey-valid.p8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &Token{AuthKey: key, KeyID: "key", TeamID: "team"}
 	var wg sync.WaitGroup
 	for range 12 {
 		wg.Go(func() {
 			for range 20 {
-				if ok, err := provider.Generate(); !ok || err != nil {
-					t.Errorf("Generate = %t, %v", ok, err)
+				if err := provider.Generate(); err != nil {
+					t.Errorf("Generate = %v", err)
 				}
-				if bearer, err := provider.GenerateIfExpiredWithError(); bearer == "" || err != nil {
+				if bearer, err := provider.Bearer(); bearer == "" || err != nil {
 					t.Errorf("refresh = %q, %v", bearer, err)
 				}
 				_ = provider.Expired()

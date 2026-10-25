@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,7 +21,7 @@ func main() {
 	}
 }
 
-func run(args []string, input io.Reader, output, diagnostics io.Writer) error {
+func run(args []string, input io.Reader, output, diagnostics io.Writer, options ...apns2.ClientOption) error {
 	flags := flag.NewFlagSet("apns2", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
 	var certificatePath, topic, mode string
@@ -56,13 +57,13 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("load certificate %q: %w", certificatePath, err)
 	}
-	client := apns2.NewClient(cert)
-	defer client.CloseIdleConnections()
+	host := apns2.HostProduction
 	if mode == "development" {
-		client.Development()
-	} else {
-		client.Production()
+		host = apns2.HostDevelopment
 	}
+	options = append([]apns2.ClientOption{apns2.WithHost(host)}, options...)
+	client := apns2.NewClient(cert, options...)
+	defer client.CloseIdleConnections()
 	scanner := bufio.NewScanner(input)
 	for scanner.Scan() {
 		deviceToken, payload, ok := strings.Cut(strings.TrimSpace(scanner.Text()), " ")
@@ -70,7 +71,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer) error {
 		if !ok || deviceToken == "" || payload == "" {
 			return fmt.Errorf("expected <DeviceToken> <APNs Payload>")
 		}
-		res, err := client.Push(&apns2.Notification{DeviceToken: deviceToken, Topic: topic, Payload: payload})
+		res, err := client.Push(context.Background(), &apns2.Notification{DeviceToken: deviceToken, Topic: topic, Payload: payload})
 		if err != nil {
 			return err
 		}

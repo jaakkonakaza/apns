@@ -89,17 +89,16 @@ func TestTransportIdlePings(t *testing.T) {
 		pings <- nil
 		<-stop
 	}()
-	client := apns.NewTokenClient(mockToken())
+	client := apns.NewTokenClient(mockToken(),
+		apns.WithHost("https://"+listener.Addr().String()),
+		apns.WithTLSConfig(fixture.Client().Transport.(*http.Transport).TLSClientConfig),
+		apns.WithReadIdleTimeout(20*time.Millisecond),
+	)
 	defer client.CloseIdleConnections()
-	client.Host = "https://" + listener.Addr().String()
-	transport := client.HTTPClient.Transport.(*http.Transport)
-	transport.TLSClientConfig.RootCAs = fixture.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
-	transport.HTTP2.SendPingTimeout = 20 * time.Millisecond
-	transport.HTTP2.PingTimeout = time.Second
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pushed := make(chan error, 1)
-	go func() { _, err := client.PushWithContext(ctx, mockNotification()); pushed <- err }()
+	go func() { _, err := client.Push(ctx, mockNotification()); pushed <- err }()
 	select {
 	case err := <-pings:
 		if err != nil {

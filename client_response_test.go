@@ -1,6 +1,7 @@
 package apns2_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	apns "github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/token"
@@ -24,7 +26,7 @@ func TestResponseMetadataSurvivesDecodeError(t *testing.T) {
 					_, _ = w.Write([]byte(body))
 				}))
 				defer server.Close()
-				response, err := mockClient(server.URL).Push(mockNotification())
+				response, err := mockClient(server.URL).Push(context.Background(), mockNotification())
 				if err == nil {
 					t.Fatal("malformed response returned no error")
 				}
@@ -44,7 +46,7 @@ func TestResponseBodyCannotReplaceHTTPMetadata(t *testing.T) {
 		_, _ = w.Write([]byte(`{"StatusCode":200,"ApnsID":"body-id","ApnsUniqueID":"body-unique-id","reason":"Unregistered","timestamp":1458114061260}`))
 	}))
 	defer server.Close()
-	response, err := mockClient(server.URL).Push(mockNotification())
+	response, err := mockClient(server.URL).Push(context.Background(), mockNotification())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +72,11 @@ func TestDeviceTokenValidation(t *testing.T) {
 	for _, value := range []string{"", "a", "zz", "dead/beef", "dead?beef", "dead#beef", "de ad"} {
 		n := mockNotification()
 		n.DeviceToken = value
-		if _, err := client.Push(n); err == nil {
+		if _, err := client.Push(context.Background(), n); err == nil {
 			t.Errorf("accepted invalid device token %q", value)
 		}
 	}
-	if _, err := client.Push(nil); err == nil {
+	if _, err := client.Push(context.Background(), nil); err == nil {
 		t.Error("accepted nil notification")
 	}
 	if requests.Load() != 0 {
@@ -83,7 +85,7 @@ func TestDeviceTokenValidation(t *testing.T) {
 	for _, value := range []string{"00", "aAbB", strings.Repeat("ab", 40)} {
 		n := mockNotification()
 		n.DeviceToken = value
-		if _, err := client.Push(n); err != nil {
+		if _, err := client.Push(context.Background(), n); err != nil {
 			t.Errorf("rejected hexadecimal token %q: %v", value, err)
 		}
 	}
@@ -93,16 +95,39 @@ func TestDeviceTokenValidation(t *testing.T) {
 }
 
 func TestPushReturnsTokenSigningError(t *testing.T) {
-	for _, cached := range []string{"", "stale-token"} {
-		t.Run(cached, func(t *testing.T) {
-			client := apns.NewTokenClient(&token.Token{Bearer: cached, IssuedAt: 1})
-			client.HTTPClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-				t.Error("push reached transport after token signing failed")
-				return nil, errors.New("unexpected request")
-			})
-			if _, err := client.Push(mockNotification()); !errors.Is(err, token.ErrAuthKeyNil) {
-				t.Fatalf("push error = %v, want ErrAuthKeyNil", err)
-			}
-		})
+	client := apns.NewTokenClient(&token.Token{}, apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("push reached transport after token signing failed")
+		return nil, errors.New("unexpected request")
+	})}))
+	if _, err := client.Push(context.Background(), mockNotification()); !errors.Is(err, token.ErrAuthKeyNil) {
+		t.Fatalf("push error = %v, want ErrAuthKeyNil", err)
+	}
+}
+
+func TestZeroExpirationOmitsHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, present := r.Header["Apns-Expiration"]; present {
+			t.Error("zero expiration sent an expiration header")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if _, err := mockClient(server.URL).Push(context.Background(), mockNotification()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPreEpochExpirationSendsZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("apns-expiration"); got != "0" {
+			t.Errorf("expiration = %q, want 0", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	n := mockNotification()
+	n.Expiration = time.Unix(-1, 0)
+	if _, err := mockClient(server.URL).Push(context.Background(), n); err != nil {
+		t.Fatal(err)
 	}
 }

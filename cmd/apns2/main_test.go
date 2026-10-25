@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,17 +75,11 @@ func TestCLISend(t *testing.T) {
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	defer server.Close()
-	originalDial := apns2.DialTLS
-	t.Cleanup(func() { apns2.DialTLS = originalDial })
-	apns2.DialTLS = func(network, _ string, cfg *tls.Config) (net.Conn, error) {
-		cfg = cfg.Clone()
-		cfg.ServerName = ""
-		cfg.RootCAs = server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
-		return tls.Dial(network, server.Listener.Addr().String(), cfg)
-	}
+
 	var output bytes.Buffer
 	args := []string{"--certificate-path=../../certificate/testdata/certificate-valid.pem", "--topic=com.example"}
-	if err := run(args, strings.NewReader("aabbcc "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard); err != nil {
+	if err := run(args, strings.NewReader("aabbcc "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard, apns2.WithHost(server.URL),
+		apns2.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "200: ''\n" {

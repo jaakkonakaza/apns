@@ -21,25 +21,18 @@ func TestClientCustomHTTP(t *testing.T) {
 	}))
 	defer server.Close()
 	for _, tokenAuth := range []bool{false, true} {
-		for _, replaceClient := range []bool{false, true} {
-			t.Run(map[bool]string{false: "certificate", true: "token"}[tokenAuth]+"/"+map[bool]string{false: "transport", true: "client"}[replaceClient], func(t *testing.T) {
-				client := apns.NewClient(mockCert())
-				if tokenAuth {
-					client = apns.NewTokenClient(mockToken())
-				}
-				defer client.CloseIdleConnections()
-				client.Host = server.URL
-				if replaceClient {
-					client.HTTPClient = server.Client()
-				} else {
-					client.HTTPClient.Transport = http.DefaultTransport.(*http.Transport).Clone()
-				}
-				response, err := client.Push(mockNotification())
-				if err != nil || response == nil || !response.Sent() {
-					t.Fatalf("custom HTTP push = %v, %v", response, err)
-				}
-			})
-		}
+		t.Run(map[bool]string{false: "certificate", true: "token"}[tokenAuth], func(t *testing.T) {
+			options := []apns.ClientOption{apns.WithHost(server.URL), apns.WithHTTPClient(server.Client())}
+			client := apns.NewClient(mockCert(), options...)
+			if tokenAuth {
+				client = apns.NewTokenClient(mockToken(), options...)
+			}
+			defer client.CloseIdleConnections()
+			response, err := client.Push(context.Background(), mockNotification())
+			if err != nil || response == nil || !response.Sent() {
+				t.Fatalf("custom HTTP push = %v, %v", response, err)
+			}
+		})
 	}
 }
 
@@ -51,12 +44,11 @@ func TestClientPreservesTransportErrorDuringCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	transportErr := errors.New("TLS handshake failed")
-	client := apns.NewTokenClient(mockToken())
-	client.HTTPClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		cancel()
 		return nil, transportErr
-	})
-	_, err := client.PushWithContext(ctx, mockNotification())
+	})}))
+	_, err := client.Push(ctx, mockNotification())
 	if _, ok := errors.AsType[*url.Error](err); !ok {
 		t.Fatalf("error = %T %v, want *url.Error", err, err)
 	}
@@ -68,12 +60,11 @@ func TestClientPreservesTransportErrorDuringCancellation(t *testing.T) {
 func TestClientPreservesDeadlineErrorWrapper(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	client := apns.NewTokenClient(mockToken())
-	client.HTTPClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
-	})
-	_, err := client.PushWithContext(ctx, mockNotification())
+	})}))
+	_, err := client.Push(ctx, mockNotification())
 	if _, ok := errors.AsType[*url.Error](err); !ok {
 		t.Fatalf("error = %T %v, want *url.Error", err, err)
 	}

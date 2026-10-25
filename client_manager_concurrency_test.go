@@ -116,7 +116,7 @@ func TestClientManagerClosesRetiredClientsOutsideLock(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			manager := &ClientManager{MaxSize: 1}
 			retiredTransport := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
-			first := &Client{Certificate: managerTestCertificate(1), HTTPClient: &http.Client{Transport: retiredTransport}}
+			first := &Client{Certificate: managerTestCertificate(1), httpClient: &http.Client{Transport: retiredTransport}}
 			manager.Add(first)
 			// Re-adding the same client must not close a connection that remains cached.
 			manager.Add(first)
@@ -238,8 +238,8 @@ func TestClientManagerAddWinsOverPendingFactory(t *testing.T) {
 			defer unblock.Do(func() { close(release) })
 			unused := &managerCleanupTransport{}
 			explicitTransport := &managerCleanupTransport{}
-			explicit := &Client{Certificate: certificate, HTTPClient: &http.Client{Transport: explicitTransport}}
-			constructed := &Client{Certificate: certificate, HTTPClient: &http.Client{Transport: unused}}
+			explicit := &Client{Certificate: certificate, httpClient: &http.Client{Transport: explicitTransport}}
+			constructed := &Client{Certificate: certificate, httpClient: &http.Client{Transport: unused}}
 			manager := &ClientManager{MaxAge: time.Hour, Factory: func(tls.Certificate) *Client {
 				close(entered)
 				<-release

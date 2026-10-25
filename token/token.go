@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	// TokenTimeout is the period of time in seconds that a token is valid for.
+	// TokenTimeout is the period for which a token is valid.
 	// If the timestamp for token issue is not within the last hour, APNs
 	// rejects subsequent push messages. This is set to under an hour so that
 	// we generate a new token before the existing one expires.
-	TokenTimeout = 3000
+	TokenTimeout = 50 * time.Minute
 )
 
 // Possible errors when parsing a .p8 file.
@@ -33,15 +33,14 @@ var (
 
 // Token represents an Apple Provider Authentication Token (JSON Web Token).
 // Set AuthKey, KeyID, and TeamID before sharing a token and do not change them
-// during use. Its methods are safe to call concurrently. Direct access to
-// IssuedAt and Bearer requires holding Mutex, do not call methods while holding it.
+// during use. Its methods are safe to call concurrently.
 type Token struct {
-	sync.Mutex
+	mu       sync.Mutex
 	AuthKey  *ecdsa.PrivateKey
 	KeyID    string
 	TeamID   string
-	IssuedAt int64
-	Bearer   string
+	issuedAt int64
+	bearer   string
 }
 
 // AuthKeyFromFile loads a .p8 certificate from a local file and returns a
@@ -74,50 +73,43 @@ func AuthKeyFromBytes(bytes []byte) (*ecdsa.PrivateKey, error) {
 	return nil, ErrAuthKeyNotECDSA
 }
 
-// GenerateIfExpired returns a cached token or refreshes it. It returns an empty
-// string if signing fails. Use GenerateIfExpiredWithError to receive the error.
-func (t *Token) GenerateIfExpired() string {
-	bearer, _ := t.GenerateIfExpiredWithError()
-	return bearer
-}
-
-// GenerateIfExpiredWithError returns a cached token or refreshes it, returning
-// any signing error without returning an expired bearer token.
-func (t *Token) GenerateIfExpiredWithError() (string, error) {
-	t.Lock()
-	defer t.Unlock()
-	if t.Bearer == "" || t.expiredLocked() {
-		if _, err := t.generateLocked(); err != nil {
+// Bearer returns the cached token, refreshing it when necessary.
+// If signing fails, it returns an empty string and the signing error.
+func (t *Token) Bearer() (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.bearer == "" || t.expiredLocked() {
+		if err := t.generateLocked(); err != nil {
 			return "", err
 		}
 	}
-	return t.Bearer, nil
+	return t.bearer, nil
 }
 
 // Expired checks whether the token has expired.
 func (t *Token) Expired() bool {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.expiredLocked()
 }
 
 func (t *Token) expiredLocked() bool {
-	return time.Now().Unix() >= t.IssuedAt+TokenTimeout
+	return !time.Now().Before(time.Unix(t.issuedAt, 0).Add(TokenTimeout))
 }
 
 // Generate creates a new token.
-func (t *Token) Generate() (bool, error) {
-	t.Lock()
-	defer t.Unlock()
+func (t *Token) Generate() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.generateLocked()
 }
 
-func (t *Token) generateLocked() (bool, error) {
+func (t *Token) generateLocked() error {
 	if t.AuthKey == nil {
-		return false, ErrAuthKeyNil
+		return ErrAuthKeyNil
 	}
 	if t.AuthKey.Curve != elliptic.P256() {
-		return false, ErrAuthKeyCurve
+		return ErrAuthKeyCurve
 	}
 	issuedAt := time.Now().Unix()
 	header, err := json.Marshal(struct {
@@ -125,28 +117,28 @@ func (t *Token) generateLocked() (bool, error) {
 		KeyID     string `json:"kid"`
 	}{"ES256", t.KeyID})
 	if err != nil {
-		return false, err
+		return err
 	}
 	claims, err := json.Marshal(struct {
 		Issuer   string `json:"iss"`
 		IssuedAt int64  `json:"iat"`
 	}{t.TeamID, issuedAt})
 	if err != nil {
-		return false, err
+		return err
 	}
 	encoding := base64.RawURLEncoding
 	signingString := encoding.EncodeToString(header) + "." + encoding.EncodeToString(claims)
 	digest := sha256.Sum256([]byte(signingString))
 	r, s, err := ecdsa.Sign(rand.Reader, t.AuthKey, digest[:])
 	if err != nil {
-		return false, err
+		return err
 	}
 	// ES256 uses two fixed-width, 32-byte integers, rather than ASN.1 DER.
 	signature := make([]byte, 64)
 	r.FillBytes(signature[:32])
 	s.FillBytes(signature[32:])
 	bearer := signingString + "." + encoding.EncodeToString(signature)
-	t.IssuedAt = issuedAt
-	t.Bearer = bearer
-	return true, nil
+	t.issuedAt = issuedAt
+	t.bearer = bearer
+	return nil
 }

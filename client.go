@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -29,65 +30,16 @@ const (
 	HostProduction  = "https://api.push.apple.com"
 )
 
-// DefaultHost is a mutable var for testing purposes
-var DefaultHost = HostDevelopment
-
-var (
-	// HTTPClientTimeout specifies a time limit for requests made by the
-	// HTTPClient. The timeout includes connection time, any redirects,
-	// and reading the response body.
-	HTTPClientTimeout = 60 * time.Second
-
-	// ReadIdleTimeout is the timeout after which a health check using a ping
-	// frame will be carried out if no frame is received on the connection. If
-	// zero, no health check is performed.
-	ReadIdleTimeout = 15 * time.Second
-
-	// TCPKeepAlive specifies the keep-alive period for an active network
-	// connection. If zero, keep-alive probes are sent with a default value
-	// (currently 15 seconds)
-	TCPKeepAlive = 15 * time.Second
-
-	// TLSDialTimeout bounds TCP connection establishment and the TLS handshake
-	// together. Through a proxy it also covers the proxy dial and CONNECT.
-	TLSDialTimeout = 20 * time.Second
-)
-
-// DialTLS is the default dial function for creating TLS connections for direct
-// requests and HTTPS proxies. TLSDialTimeout bounds the TCP connection and TLS
-// handshake together. Clients capture DialTLS when they are created.
-//
-// Custom hooks must perform the handshake with the provided config, return a
-// connection exposing ConnectionState(), and enforce their own timeout. Hooks
-// do not receive the request context: a canceled request stops waiting for the
-// hook and closes the connection it returns. Set DialTLS to nil to use a
-// context-aware dialer bounded by TLSDialTimeout instead.
-var DialTLS = func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout:   TLSDialTimeout,
-		KeepAlive: TCPKeepAlive,
-	}
-	return tls.DialWithDialer(dialer, network, addr, cfg)
-}
-
 // Client represents a connection with the APNs
 type Client struct {
 	Host        string
 	Certificate tls.Certificate
 	Token       *token.Token
-	HTTPClient  *http.Client
+	httpClient  *http.Client
 }
 
-// A Context carries a deadline, a cancellation signal, and other values across
-// API boundaries. Context's methods may be called by multiple goroutines
-// simultaneously.
-type Context interface {
-	context.Context
-}
-
-// NewClient returns a new Client with an underlying http.Client configured with
-// the correct APNs HTTP/2 transport settings. It does not connect to the APNs
-// until the first Notification is sent via the Push method.
+// NewClient returns a certificate-authenticated client. By default it uses an
+// HTTP client configured for APNs HTTP/2. It connects when Push is first called.
 //
 // As per the Apple APNs Provider API, you should keep a handle on this client
 // so that you can keep your connections with APNs open across multiple
@@ -96,35 +48,48 @@ type Context interface {
 //
 // If your use case involves multiple long-lived connections, consider using
 // the ClientManager, which manages clients for you.
-func NewClient(certificate tls.Certificate) *Client {
-	client := newClient(&tls.Config{Certificates: []tls.Certificate{certificate}})
+// WithHTTPClient uses the supplied client's TLS identity instead of certificate.
+func NewClient(certificate tls.Certificate, options ...ClientOption) *Client {
+	client := newClient(&tls.Config{Certificates: []tls.Certificate{certificate}}, options...)
 	client.Certificate = certificate
 	return client
 }
 
-// NewTokenClient returns a new Client with an underlying http.Client configured
-// with the correct APNs HTTP/2 transport settings. It does not connect to the APNs
-// until the first Notification is sent via the Push method.
+// NewTokenClient returns a token-authenticated client. By default it uses an
+// HTTP client configured for APNs HTTP/2. It connects when Push is first called.
 //
 // As per the Apple APNs Provider API, you should keep a handle on this client
 // so that you can keep your connections with APNs open across multiple
 // notifications; don’t repeatedly open and close connections. APNs treats rapid
 // connection and disconnection as a denial-of-service attack.
-func NewTokenClient(token *token.Token) *Client {
-	client := newClient(&tls.Config{})
+func NewTokenClient(token *token.Token, options ...ClientOption) *Client {
+	client := newClient(&tls.Config{}, options...)
 	client.Token = token
 	return client
 }
 
-func newClient(tlsConfig *tls.Config) *Client {
-	return &Client{
-		HTTPClient: &http.Client{
-			Transport:     newTransport(tlsConfig),
-			Timeout:       HTTPClientTimeout,
-			CheckRedirect: noRedirects,
-		},
-		Host: DefaultHost,
+func newClient(tlsConfig *tls.Config, options ...ClientOption) *Client {
+	config := defaultClientConfig()
+	for _, option := range options {
+		option(&config)
 	}
+	if config.tlsConfig != nil {
+		supplied := config.tlsConfig.Clone()
+		if len(tlsConfig.Certificates) != 0 {
+			supplied.Certificates = tlsConfig.Certificates
+			supplied.GetClientCertificate = nil
+		}
+		tlsConfig = supplied
+	}
+	httpClient := config.httpClient
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Transport:     newTransport(tlsConfig, config),
+			Timeout:       config.timeout,
+			CheckRedirect: noRedirects,
+		}
+	}
+	return &Client{httpClient: httpClient, Host: config.host}
 }
 
 // pushTarget identifies the APNs origin of a push. The transport uses it to
@@ -136,7 +101,7 @@ type pushTarget struct {
 	proxy     *proxyDialBudget
 }
 
-// proxyDialBudget bounds a proxied dial by one TLSDialTimeout. net/http times
+// proxyDialBudget bounds the complete proxy connection establishment. net/http times
 // the proxy dial, CONNECT, and origin handshake separately, so the deadline is
 // set on the proxy connection and cleared once the origin negotiates h2.
 type proxyDialBudget struct {
@@ -164,12 +129,12 @@ func (b *proxyDialBudget) release() {
 	}
 }
 
-// dialProxy dials a proxy for target within one TLSDialTimeout budget.
-func (target pushTarget) dialProxy(ctx context.Context, dial func(context.Context) (net.Conn, error)) (net.Conn, error) {
-	if TLSDialTimeout == 0 {
+// dialProxy includes CONNECT and the origin handshake in the dial timeout.
+func (target pushTarget) dialProxy(ctx context.Context, timeout time.Duration, dial func(context.Context) (net.Conn, error)) (net.Conn, error) {
+	if timeout == 0 {
 		return dial(ctx)
 	}
-	deadline := time.Now().Add(TLSDialTimeout)
+	deadline := time.Now().Add(timeout)
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	conn, err := dial(ctx)
@@ -185,51 +150,70 @@ func (target pushTarget) dialProxy(ctx context.Context, dial func(context.Contex
 
 type pushTargetKey struct{}
 
-// ErrHTTP2Required is returned when a client created by NewClient or
-// NewTokenClient would reach APNs over anything other than HTTP/2 over TLS.
-// Replace the client's transport to talk to other endpoints.
+// errNoPushTarget is returned if net/http dials without the context Push sets.
+var errNoPushTarget = errors.New("apns2: dial is missing its push target")
+
+// ErrHTTP2Required is returned when the default transport would reach APNs
+// over anything other than HTTP/2 over TLS.
+// Use WithHTTPClient to supply a client with a different transport policy.
 var ErrHTTP2Required = errors.New("apns2: HTTP/2 over TLS is required")
 
 // newTransport returns a transport that only speaks HTTP/2 over TLS to APNs.
 // Origin handshakes offer only h2 and fail unless h2 is negotiated, including
 // handshakes net/http performs itself through proxies.
-func newTransport(tlsConfig *tls.Config) *http.Transport {
-	tlsConfig.MinVersion = tls.VersionTLS12
-	tlsConfig.VerifyConnection = verifyHTTP2
+func newTransport(tlsConfig *tls.Config, config clientConfig) *http.Transport {
+	if tlsConfig.MinVersion < tls.VersionTLS12 {
+		tlsConfig.MinVersion = tls.VersionTLS12
+	}
+	verify := tlsConfig.VerifyConnection
+	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+		if verify != nil {
+			if err := verify(state); err != nil {
+				return err
+			}
+		}
+		return verifyHTTP2(state)
+	}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP2(true)
-	netDialer := &net.Dialer{Timeout: TLSDialTimeout, KeepAlive: TCPKeepAlive}
+	netDialer := &net.Dialer{Timeout: config.dialTimeout, KeepAlive: config.tcpKeepAlive}
 	transport := &http.Transport{
-		TLSHandshakeTimeout: TLSDialTimeout,
+		TLSHandshakeTimeout: config.dialTimeout,
+		IdleConnTimeout:     config.idleConnTimeout,
 		TLSClientConfig:     tlsConfig,
+		Proxy:               config.proxy,
 		Protocols:           protocols,
-		HTTP2:               &http.HTTP2Config{SendPingTimeout: ReadIdleTimeout},
+		HTTP2:               &http.HTTP2Config{SendPingTimeout: config.readIdleTimeout},
 	}
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		target, ok := ctx.Value(pushTargetKey{}).(pushTarget)
 		if !ok {
-			return netDialer.DialContext(ctx, network, addr)
+			return nil, errNoPushTarget
 		}
 		if target.plaintext || addr == target.addr {
 			return nil, ErrHTTP2Required
 		}
-		return target.dialProxy(ctx, func(ctx context.Context) (net.Conn, error) {
+		return target.dialProxy(ctx, config.dialTimeout, func(ctx context.Context) (net.Conn, error) {
 			return netDialer.DialContext(ctx, network, addr)
 		})
 	}
-	dialTLS := DialTLS
 	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		cfg := transport.TLSClientConfig.Clone()
 		target, ok := ctx.Value(pushTargetKey{}).(pushTarget)
-		if ok && target.plaintext {
+		if !ok {
+			return nil, errNoPushTarget
+		}
+		if target.plaintext {
 			return nil, ErrHTTP2Required
 		}
-		// Without a push target only the origin is dialed here, unless Proxy is set.
-		origin := !ok && transport.Proxy == nil || ok && addr == target.addr
+		origin := addr == target.addr
 		if !origin {
 			// net/http sends CONNECT using HTTP/1.1 on the HTTPS proxy connection.
-			cfg.NextProtos = []string{"http/1.1"}
-			cfg.VerifyConnection = nil
+			cfg = &tls.Config{
+				RootCAs:    tlsConfig.RootCAs,
+				MinVersion: tlsConfig.MinVersion,
+				NextProtos: []string{"http/1.1"},
+			}
 		}
 		if cfg.ServerName == "" {
 			host, _, err := net.SplitHostPort(addr)
@@ -239,14 +223,16 @@ func newTransport(tlsConfig *tls.Config) *http.Transport {
 			cfg.ServerName = host
 		}
 		if !origin {
-			if ok {
-				return target.dialProxy(ctx, func(ctx context.Context) (net.Conn, error) {
-					return dialTLSContext(ctx, dialTLS, network, addr, cfg)
-				})
-			}
-			return dialTLSContext(ctx, dialTLS, network, addr, cfg)
+			return target.dialProxy(ctx, config.dialTimeout, func(ctx context.Context) (net.Conn, error) {
+				return dialTLSContext(ctx, config, network, addr, cfg)
+			})
 		}
-		conn, err := dialTLSContext(ctx, dialTLS, network, addr, cfg)
+		if config.dialTimeout != 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, config.dialTimeout)
+			defer cancel()
+		}
+		conn, err := dialTLSContext(ctx, config, network, addr, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -283,79 +269,35 @@ func verifyHTTP2(state tls.ConnectionState) error {
 	return nil
 }
 
-// dialTLSContext dials with hook, or with a dialer bounded by TLSDialTimeout
-// when hook is nil. Both stop waiting when ctx is done.
-func dialTLSContext(ctx context.Context, hook func(string, string, *tls.Config) (net.Conn, error), network, addr string, cfg *tls.Config) (net.Conn, error) {
-	if hook == nil {
-		if TLSDialTimeout != 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, TLSDialTimeout)
-			defer cancel()
-		}
+func dialTLSContext(ctx context.Context, config clientConfig, network, addr string, cfg *tls.Config) (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	if config.dialTLS != nil {
+		conn, err = config.dialTLS(ctx, network, addr, cfg)
+	} else {
 		dialer := &tls.Dialer{
-			NetDialer: &net.Dialer{KeepAlive: TCPKeepAlive},
+			NetDialer: &net.Dialer{KeepAlive: config.tcpKeepAlive},
 			Config:    cfg,
 		}
-		return dialer.DialContext(ctx, network, addr)
+		conn, err = dialer.DialContext(ctx, network, addr)
 	}
-	type result struct {
-		conn net.Conn
-		err  error
+	if err != nil {
+		return nil, err
 	}
-	done := make(chan result, 1)
-	go func() {
-		conn, err := hook(network, addr, cfg)
-		done <- result{conn, err}
-	}()
-	select {
-	case r := <-done:
-		return r.conn, r.err
-	case <-ctx.Done():
-		go func() {
-			if r := <-done; r.err == nil {
-				_ = r.conn.Close()
-			}
-		}()
-		return nil, ctx.Err()
+	if conn == nil || reflect.ValueOf(conn).Kind() == reflect.Pointer && reflect.ValueOf(conn).IsNil() {
+		return nil, errors.New("apns2: TLS dialer returned a nil connection")
 	}
+	return conn, nil
 }
 
 func noRedirects(*http.Request, []*http.Request) error {
 	return errors.New("apns2: redirects are not supported")
 }
 
-// Development sets the Client to use the APNs development push endpoint.
-func (c *Client) Development() *Client {
-	c.Host = HostDevelopment
-	return c
-}
-
-// Production sets the Client to use the APNs production push endpoint.
-func (c *Client) Production() *Client {
-	c.Host = HostProduction
-	return c
-}
-
-// Push sends a Notification to the APNs gateway. If the underlying http.Client
-// is not currently connected, this method will attempt to reconnect
-// transparently before sending the notification. It will return a Response
-// indicating whether the notification was accepted or rejected by the APNs
-// gateway, or an error if something goes wrong.
-//
-// Use PushWithContext if you need better cancellation and timeout control.
-func (c *Client) Push(n *Notification) (*Response, error) {
-	return c.PushWithContext(context.Background(), n)
-}
-
-// PushWithContext sends a Notification to the APNs gateway. Context carries a
-// deadline and a cancellation signal and allows you to close long running
-// requests when the context timeout is exceeded. Context must not be nil.
-//
-// If the underlying http.Client is not currently connected, this method will
-// attempt to reconnect transparently before sending the notification. It will
-// return a Response indicating whether the notification was accepted or
-// rejected by the APNs gateway, or an error if something goes wrong.
-func (c *Client) PushWithContext(ctx Context, n *Notification) (*Response, error) {
+// Push sends a Notification to the APNs gateway. Context carries cancellation
+// and deadlines and must not be nil. Push reconnects as needed and returns the
+// APNs response or an error if the request could not be completed.
+func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	if n == nil {
 		return nil, errors.New("apns2: notification is nil")
 	}
@@ -397,7 +339,7 @@ func (c *Client) PushWithContext(ctx Context, n *Notification) (*Response, error
 
 	setHeaders(request, n)
 
-	response, err := c.HTTPClient.Do(request)
+	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -413,14 +355,16 @@ func (c *Client) PushWithContext(ctx Context, n *Notification) (*Response, error
 
 	var body struct {
 		Reason    string `json:"reason"`
-		Timestamp Time   `json:"timestamp"`
+		Timestamp *int64 `json:"timestamp"`
 	}
 	decoder := json.NewDecoder(response.Body)
 	if err := decoder.Decode(&body); err != nil && err != io.EOF {
 		return r, err
 	}
 	r.Reason = body.Reason
-	r.Timestamp = body.Timestamp
+	if body.Timestamp != nil {
+		r.Timestamp = time.UnixMilli(*body.Timestamp)
+	}
 	return r, nil
 }
 
@@ -428,11 +372,11 @@ func (c *Client) PushWithContext(ctx Context, n *Notification) (*Response, error
 // connected from previous requests but are now sitting idle. It will not
 // interrupt any connections currently in use.
 func (c *Client) CloseIdleConnections() {
-	c.HTTPClient.CloseIdleConnections()
+	c.httpClient.CloseIdleConnections()
 }
 
 func (c *Client) setTokenHeader(r *http.Request) error {
-	bearer, err := c.Token.GenerateIfExpiredWithError()
+	bearer, err := c.Token.Bearer()
 	if err != nil {
 		return err
 	}
@@ -454,8 +398,8 @@ func setHeaders(r *http.Request, n *Notification) {
 	if n.Priority > 0 {
 		r.Header.Set("apns-priority", strconv.Itoa(n.Priority))
 	}
-	if n.Expiration.After(time.Unix(0, 0)) {
-		r.Header.Set("apns-expiration", strconv.FormatInt(n.Expiration.Unix(), 10))
+	if !n.Expiration.IsZero() {
+		r.Header.Set("apns-expiration", strconv.FormatInt(max(0, n.Expiration.Unix()), 10))
 	}
 	if n.PushType != "" {
 		r.Header.Set("apns-push-type", string(n.PushType))

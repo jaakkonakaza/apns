@@ -26,7 +26,7 @@ func TestClientManagerGetWithoutNew(t *testing.T) {
 	manager := apns2.ClientManager{
 		MaxSize: 32,
 		MaxAge:  5 * time.Minute,
-		Factory: apns2.NewClient,
+		Factory: func(certificate tls.Certificate) *apns2.Client { return apns2.NewClient(certificate) },
 	}
 
 	c1 := manager.Get(mockCert())
@@ -50,7 +50,7 @@ func TestClientManagerAddWithoutNew(t *testing.T) {
 	manager := apns2.ClientManager{
 		MaxSize: 1,
 		MaxAge:  5 * time.Minute,
-		Factory: apns2.NewClient,
+		Factory: func(certificate tls.Certificate) *apns2.Client { return apns2.NewClient(certificate) },
 	}
 
 	for range 2 {
@@ -68,7 +68,7 @@ func TestClientManagerLenWithoutNew(t *testing.T) {
 	manager := apns2.ClientManager{
 		MaxSize: 32,
 		MaxAge:  5 * time.Minute,
-		Factory: apns2.NewClient,
+		Factory: func(certificate tls.Certificate) *apns2.Client { return apns2.NewClient(certificate) },
 	}
 
 	if got, want := manager.Len(), 0; !reflect.DeepEqual(got, want) {

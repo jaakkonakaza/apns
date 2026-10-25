@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -31,7 +32,7 @@ func main() {
 	notifications := make(chan *apns2.Notification, 100)
 	responses := make(chan *apns2.Response, *count)
 
-	client := apns2.NewClient(cert).Production()
+	client := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
 
 	for range 50 {
 		go worker(client, notifications, responses)
@@ -57,7 +58,7 @@ func main() {
 
 func worker(client *apns2.Client, notifications <-chan *apns2.Notification, responses chan<- *apns2.Response) {
 	for n := range notifications {
-		res, err := client.Push(n)
+		res, err := client.Push(context.Background(), n)
 		if err != nil {
 			log.Fatal("Push Error:", err)
 		}

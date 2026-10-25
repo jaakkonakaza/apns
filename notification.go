@@ -128,8 +128,9 @@ type Notification struct {
 	// discarded by APNs. If this value is in the past, APNs treats the
 	// notification as if it expires immediately and does not store the
 	// notification or attempt to redeliver it. If this value is left as the
-	// default (ie, Expiration.IsZero()) an expiration header will not added to
-	// the http request.
+	// default (Expiration.IsZero()), the expiration header is omitted.
+	// Use time.Unix(0, 0) to request immediate expiration without storage.
+	// Times before the Unix epoch are also sent as zero.
 	Expiration time.Time
 
 	// The priority of the notification. Specify ether apns.PriorityHigh (10) or
