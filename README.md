@@ -198,22 +198,14 @@ Speed is greatly affected by the location of your server and the quality of your
 
 APNS/2 has a command line tool that can be installed from this repository with `go install ./cmd/apns2`. Usage:
 
-```
+```sh
 apns2 --help
-usage: apns2 --certificate-path=CERTIFICATE-PATH --topic=TOPIC [<flags>]
-
-Listens to STDIN to send notifications and writes APNS response code and reason to STDOUT.
-
-The expected format is: <DeviceToken> <APNS Payload>
-Example: aff0c63d9eaa63ad161bafee732d5bc2c31f66d552054718ff19ce314371e5d0 {"aps": {"alert": "hi"}}
-Flags:
-      --help               Show context-sensitive help (also try --help-long and --help-man).
-  -c, --certificate-path=CERTIFICATE-PATH
-                           Path to certificate file.
-  -t, --topic=TOPIC        The topic of the remote notification, which is typically the bundle ID for your app
-  -m, --mode="production"  APNS server to send notifications to. `production` or `development`. Defaults to `production`
-      --version            Show application version.
+apns2 --certificate-path=certificate.pem --topic=com.example.app --mode=production
 ```
+
+The CLI reads `<DeviceToken> <APNs Payload>` lines from STDIN and prints the
+APNs response code and reason to STDOUT. Use `--help` (or `-h`) to list
+flags and `--version` to print the version.
 
 ## License
 

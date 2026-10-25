@@ -2,14 +2,17 @@ package token
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"os"
 	"sync"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
@@ -25,6 +28,7 @@ var (
 	ErrAuthKeyNotPem   = errors.New("token: AuthKey must be a valid .p8 PEM file")
 	ErrAuthKeyNotECDSA = errors.New("token: AuthKey must be of type ecdsa.PrivateKey")
 	ErrAuthKeyNil      = errors.New("token: AuthKey was nil")
+	ErrAuthKeyCurve    = errors.New("token: AuthKey must use the P-256 curve")
 )
 
 // Token represents an Apple Provider Authentication Token (JSON Web Token).
@@ -87,22 +91,36 @@ func (t *Token) Generate() (bool, error) {
 	if t.AuthKey == nil {
 		return false, ErrAuthKeyNil
 	}
-	issuedAt := time.Now().Unix()
-	jwtToken := &jwt.Token{
-		Header: map[string]interface{}{
-			"alg": "ES256",
-			"kid": t.KeyID,
-		},
-		Claims: jwt.MapClaims{
-			"iss": t.TeamID,
-			"iat": issuedAt,
-		},
-		Method: jwt.SigningMethodES256,
+	if t.AuthKey.Curve != elliptic.P256() {
+		return false, ErrAuthKeyCurve
 	}
-	bearer, err := jwtToken.SignedString(t.AuthKey)
+	issuedAt := time.Now().Unix()
+	header, err := json.Marshal(struct {
+		Algorithm string `json:"alg"`
+		KeyID     string `json:"kid"`
+	}{"ES256", t.KeyID})
 	if err != nil {
 		return false, err
 	}
+	claims, err := json.Marshal(struct {
+		Issuer   string `json:"iss"`
+		IssuedAt int64  `json:"iat"`
+	}{t.TeamID, issuedAt})
+	if err != nil {
+		return false, err
+	}
+	encoding := base64.RawURLEncoding
+	signingString := encoding.EncodeToString(header) + "." + encoding.EncodeToString(claims)
+	digest := sha256.Sum256([]byte(signingString))
+	r, s, err := ecdsa.Sign(rand.Reader, t.AuthKey, digest[:])
+	if err != nil {
+		return false, err
+	}
+	// ES256 uses two fixed-width, 32-byte integers, rather than ASN.1 DER.
+	signature := make([]byte, 64)
+	r.FillBytes(signature[:32])
+	s.FillBytes(signature[32:])
+	bearer := signingString + "." + encoding.EncodeToString(signature)
 	t.IssuedAt = issuedAt
 	t.Bearer = bearer
 	return true, nil

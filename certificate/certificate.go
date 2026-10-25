@@ -3,6 +3,7 @@
 package certificate
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
@@ -11,7 +12,7 @@ import (
 	"os"
 	"strings"
 
-	"golang.org/x/crypto/pkcs12"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 // Possible errors when parsing a certificate.
@@ -40,13 +41,35 @@ func FromP12File(filename string, password string) (tls.Certificate, error) {
 //
 // Use "" as the password argument if the PKCS#12 certificate is not password
 // protected.
-func FromP12Bytes(bytes []byte, password string) (tls.Certificate, error) {
-	key, cert, err := pkcs12.Decode(bytes, password)
+func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
+	key, cert, chain, err := pkcs12.DecodeChain(data, password)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
+	// DecodeChain parses the key and certificates, but does not check that
+	// the leaf belongs to the private key. Reject an invalid pair at load time.
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return tls.Certificate{}, ErrFailedToParsePrivateKey
+	}
+	publicKey, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	certificateKey, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	if !bytes.Equal(publicKey, certificateKey) {
+		return tls.Certificate{}, errors.New("certificate: private key does not match certificate")
+	}
+	certificates := make([][]byte, 1, len(chain)+1)
+	certificates[0] = cert.Raw
+	for _, intermediate := range chain {
+		certificates = append(certificates, intermediate.Raw)
+	}
 	return tls.Certificate{
-		Certificate: [][]byte{cert.Raw},
+		Certificate: certificates,
 		PrivateKey:  key,
 		Leaf:        cert,
 	}, nil

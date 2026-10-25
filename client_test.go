@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -20,7 +21,6 @@ import (
 	apns "github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/certificate"
 	"github.com/sideshow/apns2/token"
-	"github.com/stretchr/testify/assert"
 )
 
 // Mocks
@@ -59,39 +59,55 @@ func (c *mockTransport) CloseIdleConnections() {
 
 func TestClientDefaultHost(t *testing.T) {
 	client := apns.NewClient(mockCert())
-	assert.Equal(t, "https://api.sandbox.push.apple.com", client.Host)
+	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestTokenDefaultHost(t *testing.T) {
 	client := apns.NewTokenClient(mockToken()).Development()
-	assert.Equal(t, "https://api.sandbox.push.apple.com", client.Host)
+	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientDevelopmentHost(t *testing.T) {
 	client := apns.NewClient(mockCert()).Development()
-	assert.Equal(t, "https://api.sandbox.push.apple.com", client.Host)
+	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestTokenClientDevelopmentHost(t *testing.T) {
 	client := apns.NewTokenClient(mockToken()).Development()
-	assert.Equal(t, "https://api.sandbox.push.apple.com", client.Host)
+	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientProductionHost(t *testing.T) {
 	client := apns.NewClient(mockCert()).Production()
-	assert.Equal(t, "https://api.push.apple.com", client.Host)
+	if got, want := client.Host, "https://api.push.apple.com"; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestTokenClientProductionHost(t *testing.T) {
 	client := apns.NewTokenClient(mockToken()).Production()
-	assert.Equal(t, "https://api.push.apple.com", client.Host)
+	if got, want := client.Host, "https://api.push.apple.com"; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientBadUrlError(t *testing.T) {
 	n := mockNotification()
 	res, err := mockClient("badurl://badurl.com").Push(n)
-	assert.Error(t, err)
-	assert.Nil(t, res)
+	if got := err; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got := res; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestClientBadTransportError(t *testing.T) {
@@ -99,8 +115,12 @@ func TestClientBadTransportError(t *testing.T) {
 	client := mockClient("badurl://badurl.com")
 	client.HTTPClient.Transport = nil
 	res, err := client.Push(n)
-	assert.Error(t, err)
-	assert.Nil(t, res)
+	if got := err; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got := res; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestClientBadDeviceToken(t *testing.T) {
@@ -108,8 +128,12 @@ func TestClientBadDeviceToken(t *testing.T) {
 	n.DeviceToken = "DGw\aOoD+HwSroh#Ug]%xzd]"
 	n.Payload = []byte(`{"aps":{"alert":"Hello!"}}`)
 	res, err := mockClient("https://api.push.apple.com").Push(n)
-	assert.Error(t, err)
-	assert.Nil(t, res)
+	if got := err; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got := res; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestClientNameToCertificate(t *testing.T) {
@@ -118,8 +142,12 @@ func TestClientNameToCertificate(t *testing.T) {
 
 	// Check if the client's certificate is set correctly
 	clientCerts := client.HTTPClient.Transport.(*http2.Transport).TLSClientConfig.Certificates
-	assert.Len(t, clientCerts, 1)
-	assert.Equal(t, crt, clientCerts[0])
+	if got, want := len(clientCerts), 1; got != want {
+		t.Errorf("length = %d, want %d", got, want)
+	}
+	if got, want := clientCerts[0], crt; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 
 	// Test with an empty certificate
 	certificate2 := tls.Certificate{}
@@ -127,8 +155,12 @@ func TestClientNameToCertificate(t *testing.T) {
 
 	// Check if the client's certificate is empty
 	clientCerts2 := client2.HTTPClient.Transport.(*http2.Transport).TLSClientConfig.Certificates
-	assert.Len(t, clientCerts2, 1)
-	assert.Equal(t, certificate2, clientCerts2[0])
+	if got, want := len(clientCerts2), 1; got != want {
+		t.Errorf("length = %d, want %d", got, want)
+	}
+	if got, want := clientCerts2[0], certificate2; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestDialTLSTimeout(t *testing.T) {
@@ -151,7 +183,9 @@ func TestDialTLSTimeout(t *testing.T) {
 	}
 	address := listener.Addr().String()
 	defer func() {
-		assert.NoError(t, listener.Close())
+		if got := listener.Close(); got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), apns.TLSDialTimeout)
@@ -172,29 +206,53 @@ func TestDialTLSTimeout(t *testing.T) {
 func TestURL(t *testing.T) {
 	n := mockNotification()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "POST", r.Method)
-		assert.Equal(t, fmt.Sprintf("/3/device/%s", n.DeviceToken), r.URL.String())
+		if got, want := r.Method, "POST"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.URL.String(), fmt.Sprintf("/3/device/%s", n.DeviceToken); !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestDefaultHeaders(t *testing.T) {
 	n := mockNotification()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "application/json; charset=utf-8", r.Header.Get("Content-Type"))
-		assert.Equal(t, "", r.Header.Get("apns-id"))
-		assert.Equal(t, "", r.Header.Get("apns-collapse-id"))
-		assert.Equal(t, "", r.Header.Get("apns-priority"))
-		assert.Equal(t, "", r.Header.Get("apns-topic"))
-		assert.Equal(t, "", r.Header.Get("apns-expiration"))
-		assert.Equal(t, "", r.Header.Get("thread-id"))
-		assert.Equal(t, "alert", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("Content-Type"), "application/json; charset=utf-8"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-id"), ""; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-collapse-id"), ""; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-priority"), ""; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-topic"), ""; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-expiration"), ""; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("thread-id"), ""; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-push-type"), "alert"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestClientPushWithContextWithTimeout(t *testing.T) {
@@ -211,8 +269,12 @@ func TestClientPushWithContextWithTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	time.Sleep(timeout)
 	res, err := mockClient(server.URL).PushWithContext(ctx, n)
-	assert.Error(t, err)
-	assert.Nil(t, res)
+	if got := err; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got := res; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 	cancel()
 }
 
@@ -227,8 +289,12 @@ func TestClientPushWithContext(t *testing.T) {
 	defer server.Close()
 
 	res, err := mockClient(server.URL).PushWithContext(context.Background(), n)
-	assert.Nil(t, err)
-	assert.Equal(t, res.ApnsID, apnsID)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := apnsID, res.ApnsID; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientPushWithNilContext(t *testing.T) {
@@ -242,8 +308,12 @@ func TestClientPushWithNilContext(t *testing.T) {
 	defer server.Close()
 
 	res, err := mockClient(server.URL).PushWithContext(nil, n)
-	assert.EqualError(t, err, "net/http: nil Context")
-	assert.Nil(t, res)
+	if err := err; err == nil || err.Error() != "net/http: nil Context" {
+		t.Errorf("error = %v, want %q", err, "net/http: nil Context")
+	}
+	if got := res; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestHeaders(t *testing.T) {
@@ -254,15 +324,27 @@ func TestHeaders(t *testing.T) {
 	n.Priority = 10
 	n.Expiration = time.Now()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, n.ApnsID, r.Header.Get("apns-id"))
-		assert.Equal(t, n.CollapseID, r.Header.Get("apns-collapse-id"))
-		assert.Equal(t, "10", r.Header.Get("apns-priority"))
-		assert.Equal(t, n.Topic, r.Header.Get("apns-topic"))
-		assert.Equal(t, fmt.Sprintf("%v", n.Expiration.Unix()), r.Header.Get("apns-expiration"))
+		if got, want := r.Header.Get("apns-id"), n.ApnsID; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-collapse-id"), n.CollapseID; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-priority"), "10"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-topic"), n.Topic; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-expiration"), fmt.Sprintf("%v", n.Expiration.Unix()); !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestExpirationHeader(t *testing.T) {
@@ -273,148 +355,210 @@ func TestExpirationHeader(t *testing.T) {
 	n.Priority = 10
 	n.Expiration = time.Unix(0, 0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, n.ApnsID, r.Header.Get("apns-id"))
-		assert.Equal(t, n.CollapseID, r.Header.Get("apns-collapse-id"))
-		assert.Equal(t, "10", r.Header.Get("apns-priority"))
-		assert.Equal(t, n.Topic, r.Header.Get("apns-topic"))
-		assert.Equal(t, "", r.Header.Get("apns-expiration"))
+		if got, want := r.Header.Get("apns-id"), n.ApnsID; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-collapse-id"), n.CollapseID; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-priority"), "10"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-topic"), n.Topic; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("apns-expiration"), ""; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeAlertHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeAlert
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "alert", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "alert"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeBackgroundHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeBackground
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "background", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "background"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeLocationHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeLocation
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "location", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "location"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeVOIPHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeVOIP
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "voip", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "voip"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeComplicationHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeComplication
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "complication", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "complication"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeFileProviderHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeFileProvider
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "fileprovider", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "fileprovider"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeMDMHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeMDM
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "mdm", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "mdm"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypeLiveActivityHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypeLiveActivity
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "liveactivity", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "liveactivity"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPushTypePushToTalkHeader(t *testing.T) {
 	n := mockNotification()
 	n.PushType = apns.PushTypePushToTalk
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "pushtotalk", r.Header.Get("apns-push-type"))
+		if got, want := r.Header.Get("apns-push-type"), "pushtotalk"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestAuthorizationHeader(t *testing.T) {
 	n := mockNotification()
 	token := mockToken()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "application/json; charset=utf-8", r.Header.Get("Content-Type"))
-		assert.Equal(t, fmt.Sprintf("bearer %v", token.Bearer), r.Header.Get("authorization"))
+		if got, want := r.Header.Get("Content-Type"), "application/json; charset=utf-8"; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+		if got, want := r.Header.Get("authorization"), fmt.Sprintf("bearer %v", token.Bearer); !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 
 	client := mockClient(server.URL)
 	client.Token = token
 	_, err := client.Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestPayload(t *testing.T) {
 	n := mockNotification()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		assert.NoError(t, err)
-		assert.Equal(t, n.Payload, body)
+		if got := err; got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+		if got, want := body, n.Payload; !reflect.DeepEqual(got, want) {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
 	}))
 	defer server.Close()
 	_, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
 }
 
 func TestBadPayload(t *testing.T) {
 	n := mockNotification()
 	n.Payload = func() {}
 	_, err := mockClient("").Push(n)
-	assert.Error(t, err)
+	if got := err; got == nil {
+		t.Error("unexpected nil")
+	}
 }
 
 func Test200SuccessResponse(t *testing.T) {
@@ -429,11 +573,21 @@ func Test200SuccessResponse(t *testing.T) {
 	}))
 	defer server.Close()
 	res, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, res.StatusCode)
-	assert.Equal(t, apnsID, res.ApnsID)
-	assert.Equal(t, apnsUniqueID, res.ApnsUniqueID)
-	assert.Equal(t, true, res.Sent())
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := res.StatusCode, http.StatusOK; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.ApnsID, apnsID; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.ApnsUniqueID, apnsUniqueID; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.Sent(), true; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func Test400BadRequestPayloadEmptyResponse(t *testing.T) {
@@ -444,15 +598,27 @@ func Test400BadRequestPayloadEmptyResponse(t *testing.T) {
 		w.Header().Set("apns-id", apnsID)
 		w.WriteHeader(http.StatusBadRequest)
 		_, err := w.Write([]byte("{\"reason\":\"PayloadEmpty\"}"))
-		assert.NoError(t, err)
+		if got := err; got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
 	}))
 	defer server.Close()
 	res, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
-	assert.Equal(t, 400, res.StatusCode)
-	assert.Equal(t, apnsID, res.ApnsID)
-	assert.Equal(t, apns.ReasonPayloadEmpty, res.Reason)
-	assert.Equal(t, false, res.Sent())
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := res.StatusCode, 400; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.ApnsID, apnsID; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.Reason, apns.ReasonPayloadEmpty; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.Sent(), false; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func Test410UnregisteredResponse(t *testing.T) {
@@ -463,16 +629,30 @@ func Test410UnregisteredResponse(t *testing.T) {
 		w.Header().Set("apns-id", apnsID)
 		w.WriteHeader(http.StatusGone)
 		_, err := w.Write([]byte("{\"reason\":\"Unregistered\", \"timestamp\": 1458114061260 }"))
-		assert.NoError(t, err)
+		if got := err; got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
 	}))
 	defer server.Close()
 	res, err := mockClient(server.URL).Push(n)
-	assert.NoError(t, err)
-	assert.Equal(t, 410, res.StatusCode)
-	assert.Equal(t, apnsID, res.ApnsID)
-	assert.Equal(t, apns.ReasonUnregistered, res.Reason)
-	assert.Equal(t, int64(1458114061260)/1000, res.Timestamp.Unix())
-	assert.Equal(t, false, res.Sent())
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := res.StatusCode, 410; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.ApnsID, apnsID; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.Reason, apns.ReasonUnregistered; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.Timestamp.Unix(), int64(1458114061260)/1000; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := res.Sent(), false; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestMalformedJSONResponse(t *testing.T) {
@@ -480,12 +660,18 @@ func TestMalformedJSONResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_, err := w.Write([]byte("{{MalformedJSON}}"))
-		assert.NoError(t, err)
+		if got := err; got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
 	}))
 	defer server.Close()
 	res, err := mockClient(server.URL).Push(n)
-	assert.Error(t, err)
-	assert.Equal(t, false, res.Sent())
+	if got := err; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got, want := res.Sent(), false; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestCloseIdleConnections(t *testing.T) {
@@ -494,7 +680,11 @@ func TestCloseIdleConnections(t *testing.T) {
 	client := mockClient("")
 	client.HTTPClient.Transport = transport
 
-	assert.Equal(t, false, transport.closed)
+	if got, want := transport.closed, false; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 	client.CloseIdleConnections()
-	assert.Equal(t, true, transport.closed)
+	if got, want := transport.closed, true; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }

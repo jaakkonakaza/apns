@@ -10,13 +10,16 @@ import (
 
 	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/certificate"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestNewClientManager(t *testing.T) {
 	manager := apns2.NewClientManager()
-	assert.Equal(t, manager.MaxSize, 64)
-	assert.Equal(t, manager.MaxAge, 10*time.Minute)
+	if got, want := 64, manager.MaxSize; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := 10*time.Minute, manager.MaxAge; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerGetWithoutNew(t *testing.T) {
@@ -30,9 +33,15 @@ func TestClientManagerGetWithoutNew(t *testing.T) {
 	c2 := manager.Get(mockCert())
 	v1 := reflect.ValueOf(c1)
 	v2 := reflect.ValueOf(c2)
-	assert.NotNil(t, c1)
-	assert.Equal(t, v1.Pointer(), v2.Pointer())
-	assert.Equal(t, 1, manager.Len())
+	if got := c1; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got, want := v2.Pointer(), v1.Pointer(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerAddWithoutNew(t *testing.T) {
@@ -48,7 +57,9 @@ func TestClientManagerAddWithoutNew(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			manager.Add(apns2.NewClient(mockCert()))
-			assert.Equal(t, 1, manager.Len())
+			if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+				t.Errorf("got %#v, want %#v", got, want)
+			}
 			wg.Done()
 		}()
 	}
@@ -62,7 +73,9 @@ func TestClientManagerLenWithoutNew(t *testing.T) {
 		Factory: apns2.NewClient,
 	}
 
-	assert.Equal(t, 0, manager.Len())
+	if got, want := manager.Len(), 0; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerGetDefaultOptions(t *testing.T) {
@@ -71,9 +84,15 @@ func TestClientManagerGetDefaultOptions(t *testing.T) {
 	c2 := manager.Get(mockCert())
 	v1 := reflect.ValueOf(c1)
 	v2 := reflect.ValueOf(c2)
-	assert.NotNil(t, c1)
-	assert.Equal(t, v1.Pointer(), v2.Pointer())
-	assert.Equal(t, 1, manager.Len())
+	if got := c1; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got, want := v2.Pointer(), v1.Pointer(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerGetNilClientFactory(t *testing.T) {
@@ -83,9 +102,15 @@ func TestClientManagerGetNilClientFactory(t *testing.T) {
 	}
 	c1 := manager.Get(mockCert())
 	c2 := manager.Get(mockCert())
-	assert.Nil(t, c1)
-	assert.Nil(t, c2)
-	assert.Equal(t, 0, manager.Len())
+	if got := c1; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got := c2; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := manager.Len(), 0; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerGetMaxAgeExpiration(t *testing.T) {
@@ -96,9 +121,15 @@ func TestClientManagerGetMaxAgeExpiration(t *testing.T) {
 	c2 := manager.Get(mockCert())
 	v1 := reflect.ValueOf(c1)
 	v2 := reflect.ValueOf(c2)
-	assert.NotNil(t, c1)
-	assert.NotEqual(t, v1.Pointer(), v2.Pointer())
-	assert.Equal(t, 1, manager.Len())
+	if got := c1; got == nil {
+		t.Error("unexpected nil")
+	}
+	if got, want := v2.Pointer(), v1.Pointer(); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
+	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerGetMaxAgeExpirationWithNilFactory(t *testing.T) {
@@ -111,9 +142,15 @@ func TestClientManagerGetMaxAgeExpirationWithNilFactory(t *testing.T) {
 	c1 := manager.Get(mockCert())
 	time.Sleep(time.Microsecond)
 	c2 := manager.Get(mockCert())
-	assert.Nil(t, c1)
-	assert.Nil(t, c2)
-	assert.Equal(t, 1, manager.Len())
+	if got := c1; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got := c2; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerGetMaxSizeExceeded(t *testing.T) {
@@ -125,8 +162,12 @@ func TestClientManagerGetMaxSizeExceeded(t *testing.T) {
 	_ = manager.Get(cert2)
 	cert3, _ := certificate.FromP12File("certificate/testdata/certificate-valid-encrypted.p12", "password")
 	c := manager.Get(cert3)
-	assert.True(t, bytes.Equal(cert3.Certificate[0], c.Certificate.Certificate[0]))
-	assert.Equal(t, 1, manager.Len())
+	if !bytes.Equal(cert3.Certificate[0], c.Certificate.Certificate[0]) {
+		t.Error("bytes.Equal(cert3.Certificate[0], c.Certificate.Certificate[0]) = false, want true")
+	}
+	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestClientManagerAdd(t *testing.T) {
@@ -145,5 +186,7 @@ func TestClientManagerAddTwice(t *testing.T) {
 	manager := apns2.NewClientManager()
 	manager.Add(apns2.NewClient(mockCert()))
 	manager.Add(apns2.NewClient(mockCert()))
-	assert.Equal(t, 1, manager.Len())
+	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }

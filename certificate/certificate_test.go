@@ -4,99 +4,155 @@ import (
 	"crypto/tls"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/sideshow/apns2/certificate"
-	"github.com/stretchr/testify/assert"
 )
 
 // PKCS#12
 
 func TestValidCertificateFromP12File(t *testing.T) {
 	cer, err := certificate.FromP12File("testdata/certificate-valid.p12", "")
-	assert.Nil(t, err)
-	assert.NotEqual(t, tls.Certificate{}, cer)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := cer, (tls.Certificate{}); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
 }
 
 func TestValidCertificateFromP12Bytes(t *testing.T) {
 	bytes, _ := os.ReadFile("testdata/certificate-valid.p12")
 	cer, err := certificate.FromP12Bytes(bytes, "")
-	assert.NoError(t, err)
-	assert.NotEqual(t, tls.Certificate{}, cer)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := cer, (tls.Certificate{}); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
 }
 
 func TestEncryptedValidCertificateFromP12File(t *testing.T) {
 	cer, err := certificate.FromP12File("testdata/certificate-valid-encrypted.p12", "password")
-	assert.NoError(t, err)
-	assert.NotEqual(t, tls.Certificate{}, cer)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := cer, (tls.Certificate{}); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
 }
 
 func TestNoSuchFileP12File(t *testing.T) {
 	cer, err := certificate.FromP12File("", "")
-	assert.Equal(t, errors.New("open : no such file or directory").Error(), err.Error())
-	assert.Equal(t, tls.Certificate{}, cer)
+	if got, want := err.Error(), errors.New("open : no such file or directory").Error(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestBadPasswordP12File(t *testing.T) {
 	cer, err := certificate.FromP12File("testdata/certificate-valid-encrypted.p12", "")
-	assert.Equal(t, tls.Certificate{}, cer)
-	assert.Equal(t, errors.New("pkcs12: decryption password incorrect").Error(), err.Error())
+	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := err.Error(), errors.New("pkcs12: decryption password incorrect").Error(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 // PEM
 
 func TestValidCertificateFromPemFile(t *testing.T) {
 	cer, err := certificate.FromPemFile("testdata/certificate-valid.pem", "")
-	assert.NoError(t, err)
-	assert.NotEqual(t, tls.Certificate{}, cer)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := cer, (tls.Certificate{}); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
 }
 
 func TestValidCertificateFromPemBytes(t *testing.T) {
 	bytes, _ := os.ReadFile("testdata/certificate-valid.pem")
 	cer, err := certificate.FromPemBytes(bytes, "")
-	assert.NoError(t, err)
-	assert.NotEqual(t, tls.Certificate{}, cer)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := cer, (tls.Certificate{}); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
 }
 
 func TestValidCertificateFromPemFileWithPKCS8PrivateKey(t *testing.T) {
 	cer, err := certificate.FromPemFile("testdata/certificate-valid-pkcs8.pem", "")
-	assert.NoError(t, err)
-	assert.NotEqual(t, tls.Certificate{}, cer)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := cer, (tls.Certificate{}); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
 }
 
 func TestValidCertificateFromPemBytesWithPKCS8PrivateKey(t *testing.T) {
 	bytes, _ := os.ReadFile("testdata/certificate-valid-pkcs8.pem")
 	cer, err := certificate.FromPemBytes(bytes, "")
-	assert.NoError(t, err)
-	assert.NotEqual(t, tls.Certificate{}, cer)
+	if got := err; got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+	if got, want := cer, (tls.Certificate{}); reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want different from %#v", got, want)
+	}
 }
 
 func TestUnsupportedEncryptedCertificateFromPemFile(t *testing.T) {
 	cer, err := certificate.FromPemFile("testdata/certificate-legacy-encrypted-unsupported.pem", "password")
-	assert.Equal(t, tls.Certificate{}, cer)
-	assert.Equal(t, certificate.ErrFailedToParsePrivateKey, err)
+	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := err, certificate.ErrFailedToParsePrivateKey; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestNoSuchFilePemFile(t *testing.T) {
 	cer, err := certificate.FromPemFile("", "")
-	assert.Equal(t, tls.Certificate{}, cer)
-	assert.Equal(t, errors.New("open : no such file or directory").Error(), err.Error())
+	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := err.Error(), errors.New("open : no such file or directory").Error(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestBadKeyPemFile(t *testing.T) {
 	cer, err := certificate.FromPemFile("testdata/certificate-bad-key.pem", "")
-	assert.Equal(t, tls.Certificate{}, cer)
-	assert.Equal(t, certificate.ErrFailedToParsePrivateKey, err)
+	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := err, certificate.ErrFailedToParsePrivateKey; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestNoKeyPemFile(t *testing.T) {
 	cer, err := certificate.FromPemFile("testdata/certificate-no-key.pem", "")
-	assert.Equal(t, tls.Certificate{}, cer)
-	assert.Equal(t, certificate.ErrNoPrivateKey, err)
+	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := err, certificate.ErrNoPrivateKey; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
 
 func TestNoCertificatePemFile(t *testing.T) {
 	cer, err := certificate.FromPemFile("testdata/certificate-no-certificate.pem", "")
-	assert.Equal(t, tls.Certificate{}, cer)
-	assert.Equal(t, certificate.ErrNoCertificate, err)
+	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+	if got, want := err, certificate.ErrNoCertificate; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
 }
