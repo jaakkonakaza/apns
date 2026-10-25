@@ -164,6 +164,33 @@ notification.Payload = payload
 
 Refer to the [payload](https://pkg.go.dev/github.com/jaakkonakaza/apns2/payload) docs for more info.
 
+## Broadcast notifications and channels
+
+`BroadcastClient` sends Live Activity updates to channels and supports channel
+creation, inspection, listing, and deletion. Set both endpoints explicitly:
+
+```go
+broadcast := apns2.NewBroadcastTokenClient(provider)
+broadcast.Host = apns2.HostBroadcastDevelopment
+broadcast.ChannelHost = apns2.HostChannelDevelopment
+defer broadcast.CloseIdleConnections()
+
+channel, err := broadcast.CreateChannel(ctx,
+  &apns2.ChannelRequest{BundleID: "com.example.app"},
+  apns2.MessageStorageNone)
+if err != nil {
+  log.Fatal(err)
+}
+if !channel.Success() {
+  log.Fatal(channel.Reason)
+}
+```
+
+Use the returned `ChannelID` in a `BroadcastNotification`. Its payload is a Live
+Activity update. `GetChannel`, `ListChannels`, and `DeleteChannel` manage the
+app's channels. Inspect `Success()` for every operation, including deletion.
+Enable the app's broadcast capability in Apple Developer before using channels.
+
 ## Response, Error handling
 
 `Push` returns a response for APNs acceptance or rejection. Check `Sent()` to
@@ -213,9 +240,24 @@ res, err := client.Push(ctx, notification)
 Reuse a client across pushes. Its HTTP transport pools connections and supports
 concurrent requests. Call `CloseIdleConnections()` when retiring a client.
 
-For multiple certificates, `NewClientManager` caches clients and closes idle
-connections when entries expire or are evicted. Size the cache and sending
-concurrency for your workload.
+`NewClientManager` caches certificate and token clients and closes idle
+connections when entries expire, are evicted, or are removed. Token clients are
+keyed by team, key ID, public key, and host. Reuse the returned client across
+pushes.
+
+```go
+manager := apns2.NewClientManager(apns2.WithHost(apns2.HostProduction))
+client, err := manager.GetByToken(provider)
+if err != nil {
+  log.Fatal(err)
+}
+```
+
+Use `Remove(cert)` or `RemoveByToken(provider)` when credentials or topic access
+change, or APNs reports `UnrelatedKeyIdInToken`. A later lookup creates a fresh
+client. Removal closes idle connections without interrupting requests in use.
+Configure `Factory` or `TokenFactory` before concurrent use to customize client
+creation. `Add(client)` returns an error if the client has an invalid identity.
 
 ## Command line tool
 
@@ -230,11 +272,15 @@ From a checkout, use `go install ./cmd/apns2`. Usage:
 ```sh
 apns2 --help
 apns2 --certificate-path=certificate.pem --topic=com.example.app --mode=production
+apns2 --auth-key-path=AuthKey.p8 --key-id=KEY_ID --team-id=TEAM_ID --topic=com.example.app --push-type=background --priority=5
 ```
 
 The CLI reads `<DeviceToken> <APNs Payload>` lines from STDIN and prints the
 APNs response code and reason to STDOUT. Use `--help` (or `-h`) to list
-flags and `--version` to print the version.
+flags and `--version` to print the module version or development build revision.
+Choose certificate authentication or supply all three token authentication flags.
+`--push-type` selects the notification type, and `--priority` accepts 1, 5, or 10.
+The default priority, 0, omits the header.
 
 ## License
 
