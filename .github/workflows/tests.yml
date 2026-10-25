@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Formatting and lint
+    name: Formatting, modules, and lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,6 +29,9 @@ jobs:
 
       - name: Check formatting
         run: make fmt-check
+
+      - name: Check module tidiness
+        run: make tidy-check
 
       - name: Lint
         run: make lint
@@ -49,37 +52,4 @@ jobs:
         run: make build
 
       - name: Run tests
-        run: make coverage
-
-      - name: Save coverage
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: coverage
-          path: covprofile
-          if-no-files-found: error
-          retention-days: 7
-
-  coverage:
-    name: Coverage upload
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      - name: Download coverage
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: coverage
-
-      - name: Update coverage
-        env:
-          COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: make upload-coverage
+        run: make test

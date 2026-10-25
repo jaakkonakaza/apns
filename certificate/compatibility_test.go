@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sideshow/apns2/certificate"
+	"github.com/jaakkonakaza/apns2/certificate"
 	"software.sslmate.com/src/go-pkcs12"
 )
 

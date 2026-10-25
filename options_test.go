@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	apns "github.com/sideshow/apns2"
+	apns "github.com/jaakkonakaza/apns2"
 )
 
 func TestClientRequestTimeoutsAreIndependent(t *testing.T) {

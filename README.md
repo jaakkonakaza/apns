@@ -1,21 +1,15 @@
 # APNS/2
 
-APNS/2 is a go package designed for simple, flexible and fast Apple Push Notifications on iOS, OSX and Safari using the new HTTP/2 Push provider API.
-
-[![Build Status](https://github.com/sideshow/apns2/actions/workflows/tests.yml/badge.svg)](https://github.com/sideshow/apns2/actions/workflows/tests.yml) [![Coverage Status](https://coveralls.io/repos/sideshow/apns2/badge.svg?branch=master&service=github)](https://coveralls.io/github/sideshow/apns2?branch=master) [![GoDoc](https://godoc.org/github.com/sideshow/apns2?status.svg)](https://godoc.org/github.com/sideshow/apns2)
+A Go client for sending Apple Push Notification service (APNs) notifications over HTTP/2.
 
 ## Features
 
-- Uses new Apple APNs HTTP/2 connection
-- Fast - See [notes on speed](https://github.com/sideshow/apns2/wiki/APNS-HTTP-2-Push-Speed)
+- Certificate and token authentication
+- Persistent HTTP/2 connections with idle health checks
+- Context cancellation and per-client configuration
+- Payload builder for alerts, background notifications, and Live Activities
+- Concurrent client cache for multiple certificates
 - Requires Go 1.27.3 or later
-- Supports new Apple Token Based Authentication (JWT)
-- Supports new iOS 10 features such as Collapse IDs, Subtitles and Mutable Notifications
-- Supports new iOS 15 features interruptionLevel and relevanceScore
-- Supports persistent connections to APNs
-- Supports VoIP/PushKit notifications (iOS 8 and later)
-- Modular & easy to use
-- Tested and working in APNs production environment
 
 ## Install
 
@@ -23,7 +17,7 @@ APNS/2 is a go package designed for simple, flexible and fast Apple Push Notific
 - Add apns2 to your Go module:
 
 ```sh
-go get -u github.com/sideshow/apns2
+go get github.com/jaakkonakaza/apns2
 ```
 
 To run the test suite from this repository:
@@ -35,16 +29,17 @@ go test -race ./...
 ## Development
 
 Run `make tools` to install the pinned development tools into `.bin/`.
-Run `make update-tools` to refresh the linter, vulnerability scanner, and coverage
-uploader pins, then run `make check` before committing the updates.
+Run `make update-tools` to refresh the linter and vulnerability scanner pins,
+then run `make check` before committing the updates.
 
 - `make fmt` formats Go files with gofumpt and goimports.
 - `make fmt-check` checks formatting without changing files.
+- `make tidy-check` checks that module files are tidy without changing them.
 - `make lint` checks Go code for issues.
 - `make build` builds the library, CLI, and examples.
 - `make test` runs tests with race detection.
 - `make vuln` checks for known vulnerabilities with govulncheck.
-- `make check` runs formatting, lint, build, test, and vulnerability checks.
+- `make check` runs formatting, module, lint, build, test, and vulnerability checks.
 
 ## Example
 
@@ -56,8 +51,8 @@ import (
   "log"
   "fmt"
 
-  "github.com/sideshow/apns2"
-  "github.com/sideshow/apns2/certificate"
+  "github.com/jaakkonakaza/apns2"
+  "github.com/jaakkonakaza/apns2/certificate"
 )
 
 func main() {
@@ -69,7 +64,7 @@ func main() {
 
   notification := &apns2.Notification{}
   notification.DeviceToken = "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7"
-  notification.Topic = "com.sideshow.Apns2"
+  notification.Topic = "com.example.app"
   notification.Payload = []byte(`{"aps":{"alert":"Hello!"}}`) // See Payload section below
 
   // Use HostDevelopment for builds installed directly from Xcode.
@@ -122,7 +117,7 @@ At a minimum, a _Notification_ needs a _DeviceToken_, a _Topic_ and a _Payload_.
 ```go
 notification := &apns2.Notification{
   DeviceToken: "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7",
-  Topic: "com.sideshow.Apns2",
+  Topic: "com.example.app",
   Payload: []byte(`{"aps":{"alert":"Hello!"}}`),
 }
 ```
@@ -158,16 +153,16 @@ payload := payload.NewPayload().
   StaleDate(time.Now().Add(5*time.Minute))
 ```
 
-Refer to the [payload](https://godoc.org/github.com/sideshow/apns2/payload) docs for more info.
+Refer to the [payload](https://pkg.go.dev/github.com/jaakkonakaza/apns2/payload) docs for more info.
 
 ## Response, Error handling
 
-APNS/2 draws the distinction between a valid response from Apple indicating whether or not the _Notification_ was sent or not, and an unrecoverable or unexpected _Error_;
+`Push` returns a response for APNs acceptance or rejection. Check `Sent()` to
+see whether APNs accepted the notification. Request, transport, and response
+decoding failures return an error. When response decoding fails, the response
+still contains the HTTP status and APNs identifiers.
 
-- An `Error` is returned if a non-recoverable error occurs, i.e. if there is a problem with the underlying _http.Client_ connection or _Certificate_, the payload was not sent, or a valid _Response_ was not received.
-- A `Response` is returned if the payload was successfully sent to Apple and a documented response was received. This struct will contain more information about whether or not the push notification succeeded, its _apns-id_ and if applicable, more information around why it did not succeed.
-
-To check if a `Notification` was successfully sent;
+Check the error first. A response may still be present when decoding fails:
 
 ```go
 res, err := client.Push(context.Background(), notification)
@@ -204,19 +199,24 @@ defer cancel()
 res, err := client.Push(ctx, notification)
 ```
 
-## Speed & Performance
+## Connection reuse
 
-Also see the wiki page on [APNS HTTP 2 Push Speed](https://github.com/sideshow/apns2/wiki/APNS-HTTP-2-Push-Speed).
+Reuse a client across pushes. Its HTTP transport pools connections and supports
+concurrent requests. Call `CloseIdleConnections()` when retiring a client.
 
-For best performance, you should hold on to an `apns2.Client` instance and not re-create it every push. The underlying TLS connection itself can take a few seconds to connect and negotiate, so if you are setting up an `apns2.Client` and tearing it down every push, then this will greatly affect performance. (Apple suggest keeping the connection open all the time).
-
-You should also limit the amount of `apns2.Client` instances. The underlying transport has a http connection pool itself, so a single client instance will be enough for most users (One instance can potentially do 4,000+ pushes per second). If you need more than this then one instance per CPU core is a good starting point.
-
-Speed is greatly affected by the location of your server and the quality of your network connection. If you're just testing locally, behind a proxy or if your server is outside USA then you're not going to get great performance. With a good server located in AWS, you should be able to get [decent throughput](https://github.com/sideshow/apns2/wiki/APNS-HTTP-2-Push-Speed).
+For multiple certificates, `NewClientManager` caches clients and closes idle
+connections when entries expire or are evicted. Size the cache and sending
+concurrency for your workload.
 
 ## Command line tool
 
-APNS/2 has a command line tool that can be installed from this repository with `go install ./cmd/apns2`. Usage:
+Install the command line tool:
+
+```sh
+go install github.com/jaakkonakaza/apns2/cmd/apns2@latest
+```
+
+From a checkout, use `go install ./cmd/apns2`. Usage:
 
 ```sh
 apns2 --help

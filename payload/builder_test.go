@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/sideshow/apns2/payload"
+	. "github.com/jaakkonakaza/apns2/payload"
 )
 
 func TestEmptyPayload(t *testing.T) {

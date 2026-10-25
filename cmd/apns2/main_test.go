@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sideshow/apns2"
+	"github.com/jaakkonakaza/apns2"
 )
 
 func TestHelpAndVersion(t *testing.T) {

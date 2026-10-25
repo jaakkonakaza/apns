@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	apns "github.com/sideshow/apns2"
+	apns "github.com/jaakkonakaza/apns2"
 )
 
 func TestHTTPSProxyHasIndependentTLSVerification(t *testing.T) {

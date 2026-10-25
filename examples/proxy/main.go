@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/sideshow/apns2"
-	"github.com/sideshow/apns2/certificate"
+	"github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns2/certificate"
 )
 
 func main() {

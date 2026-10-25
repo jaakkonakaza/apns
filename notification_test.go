@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sideshow/apns2"
+	"github.com/jaakkonakaza/apns2"
 )
 
 func TestMarshalJSON(t *testing.T) {

@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	apns "github.com/sideshow/apns2"
-	"github.com/sideshow/apns2/token"
+	apns "github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns2/token"
 )
 
 // Mocks

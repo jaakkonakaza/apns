@@ -1,6 +1,5 @@
-// Package apns2 is a go Apple Push Notification Service (APNs) provider that
-// allows you to send remote notifications to your iOS, tvOS, and OS X
-// apps using HTTP/2.
+// Package apns2 is a Go client for sending Apple Push Notification service
+// (APNs) notifications over HTTP/2.
 package apns2
 
 import (
@@ -21,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sideshow/apns2/token"
+	"github.com/jaakkonakaza/apns2/token"
 )
 
 // Apple HTTP/2 Development & Production urls
