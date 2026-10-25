@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptrace"
 	"strconv"
 	"time"
 
@@ -107,6 +106,8 @@ func noRedirects(*http.Request, []*http.Request) error {
 // and deadlines and must not be nil. Push reconnects as needed and returns the
 // APNs response or an error if the request could not be completed.
 //
+// If APNs closes a connection, its reason may appear in the transport error text.
+//
 // Push does not retry. Correct rejected requests before retrying, back off on
 // ReasonTooManyRequests, and stop sending to a token that returns 410 until the
 // app registers a new one.
@@ -146,18 +147,7 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 		return nil, err
 	}
 
-	target := newPushTarget(request.URL)
-	requestCtx := context.WithValue(request.Context(), pushTargetKey{}, target)
-	// Dials keep the request's trace, so this fires after the origin handshake
-	// even when net/http performs it through a proxy.
-	requestCtx = httptrace.WithClientTrace(requestCtx, &httptrace.ClientTrace{
-		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
-			if err == nil && state.NegotiatedProtocol == "h2" {
-				target.proxy.release()
-			}
-		},
-	})
-	request = request.WithContext(requestCtx)
+	request = prepareRequest(request)
 
 	var bearer string
 	if c.Token != nil {
@@ -183,12 +173,9 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	r.ApnsID = response.Header.Get("apns-id")
 	r.ApnsUniqueID = response.Header.Get("apns-unique-id")
 
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	data, err := readResponseBody(response.Body)
 	if err != nil {
 		return r, err
-	}
-	if len(data) > maxResponseBytes {
-		return r, fmt.Errorf("apns2: response body exceeds %d bytes", maxResponseBytes)
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return r, nil
@@ -259,4 +246,19 @@ func canonicalUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+func readResponseBody(body io.Reader) ([]byte, error) {
+	return readResponseBodyLimit(body, maxResponseBytes)
+}
+
+func readResponseBodyLimit(body io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("apns2: response body exceeds %d bytes", limit)
+	}
+	return data, nil
 }

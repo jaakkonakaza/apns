@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"reflect"
 	"sync"
@@ -208,4 +209,18 @@ func dialTLSContext(ctx context.Context, config clientConfig, network, addr stri
 		return nil, errors.New("apns2: TLS dialer returned a nil connection")
 	}
 	return conn, nil
+}
+
+func prepareRequest(request *http.Request) *http.Request {
+	target := newPushTarget(request.URL)
+	ctx := context.WithValue(request.Context(), pushTargetKey{}, target)
+	// net/http also calls the trace after an origin handshake through a proxy.
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
+			if err == nil && state.NegotiatedProtocol == "h2" {
+				target.proxy.release()
+			}
+		},
+	})
+	return request.WithContext(ctx)
 }

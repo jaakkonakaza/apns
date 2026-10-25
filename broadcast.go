@@ -1,16 +1,18 @@
 package apns2
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json/v2"
 	"errors"
+	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/jaakkonakaza/apns2/token"
 )
-
-// ErrNotImplemented is returned by APIs that are declared but not implemented yet.
-var ErrNotImplemented = errors.New("apns2: not implemented")
 
 // Broadcast push and channel management endpoints. Broadcast pushes use the
 // regular APNs hosts, as Apple's connection section lists; the api-broadcast
@@ -60,8 +62,6 @@ const (
 // BroadcastClient sends broadcast push notifications to Live Activity
 // channels and manages those channels. Devices on iOS and iPadOS 18 and later
 // subscribe to channels. Channels can't be shared across environments.
-//
-// Not implemented yet: every request method returns ErrNotImplemented.
 type BroadcastClient struct {
 	// Host is the broadcast push endpoint, HostBroadcastProduction or
 	// HostBroadcastDevelopment. There is no default.
@@ -141,10 +141,40 @@ func (r *BroadcastResponse) Success() bool {
 }
 
 // Push sends n to every device subscribed to its channel.
-//
-// Not implemented yet: it returns ErrNotImplemented.
 func (c *BroadcastClient) Push(ctx context.Context, n *BroadcastNotification) (*BroadcastResponse, error) {
-	return nil, ErrNotImplemented
+	if n == nil {
+		return nil, errors.New("apns2: broadcast notification is nil")
+	}
+	if n.ChannelID == "" {
+		return nil, errors.New("apns2: channel ID is empty")
+	}
+	priority := n.Priority
+	if priority == 0 {
+		priority = PriorityHigh
+	}
+	if priority != PriorityHigh && priority != PriorityLow && priority != PriorityPowerSaving {
+		return nil, errors.New("apns2: invalid broadcast priority")
+	}
+	payload, err := json.Marshal(&Notification{Payload: n.Payload})
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > 5120 {
+		return nil, errors.New("apns2: broadcast payload exceeds 5120 bytes")
+	}
+	r, err := c.request(ctx, c.Host, http.MethodPost, "/4/broadcasts/apps/", n.BundleID, "", n.RequestID, n.ChannelID, payload, func(req *http.Request) {
+		req.Header.Set("apns-push-type", string(PushTypeLiveActivity))
+		req.Header.Set("apns-priority", strconv.Itoa(priority))
+		expiration := int64(0)
+		if !n.Expiration.IsZero() {
+			expiration = max(0, n.Expiration.Unix())
+		}
+		req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
+	})
+	if r == nil {
+		return nil, err
+	}
+	return &r.BroadcastResponse, err
 }
 
 // MessageStoragePolicy decides whether a channel stores the most recent
@@ -198,30 +228,123 @@ type ChannelResponse struct {
 
 // CreateChannel creates a Live Activity channel for r.BundleID. APNs chooses
 // the channel ID. An app can keep up to 10,000 channels in each environment.
-//
-// Not implemented yet: it returns ErrNotImplemented.
 func (c *BroadcastClient) CreateChannel(ctx context.Context, r *ChannelRequest, policy MessageStoragePolicy) (*ChannelResponse, error) {
-	return nil, ErrNotImplemented
+	if policy != MessageStorageNone && policy != MessageStorageMostRecent {
+		return nil, errors.New("apns2: invalid message storage policy")
+	}
+	body, err := json.Marshal(struct {
+		Policy   MessageStoragePolicy `json:"message-storage-policy"`
+		PushType string               `json:"push-type"`
+	}{policy, "LiveActivity"})
+	if err != nil {
+		return nil, err
+	}
+	return c.channelRequest(ctx, http.MethodPost, r, false, false, body)
 }
 
 // GetChannel reads the configuration of an existing channel.
-//
-// Not implemented yet: it returns ErrNotImplemented.
 func (c *BroadcastClient) GetChannel(ctx context.Context, r *ChannelRequest) (*ChannelResponse, error) {
-	return nil, ErrNotImplemented
+	return c.channelRequest(ctx, http.MethodGet, r, true, false, nil)
 }
 
 // DeleteChannel deletes a channel permanently. APNs may still deliver
 // messages it already stored.
-//
-// Not implemented yet: it returns ErrNotImplemented.
 func (c *BroadcastClient) DeleteChannel(ctx context.Context, r *ChannelRequest) (*ChannelResponse, error) {
-	return nil, ErrNotImplemented
+	return c.channelRequest(ctx, http.MethodDelete, r, true, false, nil)
 }
 
 // ListChannels lists the active channel IDs for r.BundleID.
-//
-// Not implemented yet: it returns ErrNotImplemented.
 func (c *BroadcastClient) ListChannels(ctx context.Context, r *ChannelRequest) (*ChannelResponse, error) {
-	return nil, ErrNotImplemented
+	return c.channelRequest(ctx, http.MethodGet, r, false, true, nil)
+}
+
+func (c *BroadcastClient) channelRequest(ctx context.Context, method string, r *ChannelRequest, needsChannel, list bool, body []byte) (*ChannelResponse, error) {
+	if r == nil {
+		return nil, errors.New("apns2: channel request is nil")
+	}
+	channelID := ""
+	if needsChannel {
+		channelID = r.ChannelID
+		if channelID == "" {
+			return nil, errors.New("apns2: channel ID is empty")
+		}
+	}
+	suffix := "/channels"
+	if list {
+		suffix = "/all-channels"
+	}
+	return c.request(ctx, c.ChannelHost, method, "/1/apps/", r.BundleID, suffix, r.RequestID, channelID, body, nil)
+}
+
+// Channel lists can contain up to 10,000 IDs, substantially more than a push response.
+const maxChannelResponseBytes = 4 << 20
+
+func (c *BroadcastClient) request(ctx context.Context, host, method, prefix, bundleID, suffix, requestID, channelID string, body []byte, headers func(*http.Request)) (*ChannelResponse, error) {
+	if host == "" {
+		return nil, errors.New("apns2: broadcast or channel host is not set")
+	}
+	if bundleID == "" {
+		return nil, errors.New("apns2: bundle ID is empty")
+	}
+	if requestID != "" && !canonicalUUID(requestID) {
+		return nil, errors.New("apns2: apns-request-id must be a canonical 8-4-4-4-12 UUID")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, host+prefix+url.PathEscape(bundleID)+suffix, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if requestID != "" {
+		req.Header.Set("apns-request-id", requestID)
+	}
+	if channelID != "" {
+		req.Header.Set("apns-channel-id", channelID)
+	}
+	if headers != nil {
+		headers(req)
+	}
+	var bearer string
+	if c.client.Token != nil {
+		bearer, err = c.client.Token.Bearer()
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("authorization", "bearer "+bearer)
+	}
+	resp, err := c.client.httpClient.Do(prepareRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	r := &ChannelResponse{ChannelID: resp.Header.Get("apns-channel-id")}
+	r.StatusCode = resp.StatusCode
+	r.ApnsUniqueID = resp.Header.Get("apns-unique-id")
+	r.RequestID = resp.Header.Get("apns-request-id")
+	limit := int64(maxResponseBytes)
+	if suffix == "/all-channels" {
+		limit = maxChannelResponseBytes
+	}
+	data, err := readResponseBodyLimit(resp.Body, limit)
+	if err != nil {
+		return r, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return r, nil
+	}
+	var result struct {
+		Reason   string               `json:"reason"`
+		Policy   MessageStoragePolicy `json:"message-storage-policy"`
+		PushType string               `json:"push-type"`
+		Channels []string             `json:"channels"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return r, err
+	}
+	r.Reason = result.Reason
+	r.MessageStoragePolicy = result.Policy
+	r.PushType = result.PushType
+	r.ChannelIDs = result.Channels
+	if c.client.Token != nil && (r.Reason == ReasonExpiredProviderToken || r.Reason == ReasonInvalidProviderToken) {
+		c.client.Token.Invalidate(bearer)
+	}
+	return r, nil
 }
