@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
 	"math/big"
 	"testing"
 	"time"
@@ -105,5 +107,85 @@ func TestPKCS12RejectsMismatchedPrivateKey(t *testing.T) {
 	}
 	if loaded, err := certificate.FromP12Bytes(data, "test-password"); err == nil || len(loaded.Certificate) != 0 || loaded.PrivateKey != nil {
 		t.Fatal("accepted a certificate with an unrelated private key")
+	}
+}
+
+func TestPEMSEC1KeyAndChain(t *testing.T) {
+	key, leaf, issuer := testCertificateChain(t)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var combined []byte
+	for _, cert := range []*x509.Certificate{leaf, issuer} {
+		combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
+	}
+	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})...)
+	loaded, err := certificate.FromPemBytes(combined, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Certificate) != 2 || !bytes.Equal(loaded.Certificate[0], leaf.Raw) || !bytes.Equal(loaded.Certificate[1], issuer.Raw) {
+		t.Fatal("SEC1 PEM loading did not preserve the certificate chain")
+	}
+	loadedKey, ok := loaded.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok || !loadedKey.Equal(key) {
+		t.Fatal("decoded private key does not match the encoded key")
+	}
+	if loaded.Leaf == nil || !loaded.Leaf.Equal(leaf) {
+		t.Fatal("missing or incorrect parsed leaf certificate")
+	}
+}
+
+func TestPEMRejectsMismatchedPrivateKey(t *testing.T) {
+	_, leaf, _ := testCertificateChain(t)
+	unrelatedKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(unrelatedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
+	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
+	loaded, err := certificate.FromPemBytes(combined, "")
+	if err == nil || len(loaded.Certificate) != 0 || loaded.PrivateKey != nil {
+		t.Fatal("accepted a certificate with an unrelated private key")
+	}
+}
+
+func TestPEMRejectsMalformedCertificate(t *testing.T) {
+	key, _, _ := testCertificateChain(t)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("invalid DER")})
+	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
+	loaded, err := certificate.FromPemBytes(combined, "")
+	if !errors.Is(err, certificate.ErrFailedToParseCertificate) {
+		t.Fatalf("error = %v, want ErrFailedToParseCertificate", err)
+	}
+	if len(loaded.Certificate) != 0 || loaded.PrivateKey != nil {
+		t.Fatal("malformed certificate returned credentials")
+	}
+}
+
+func TestPEMUsesFirstPrivateKey(t *testing.T) {
+	key, leaf, _ := testCertificateChain(t)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
+	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
+	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("trailing garbage")})...)
+	loaded, err := certificate.FromPemBytes(combined, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedKey, ok := loaded.PrivateKey.(*ecdsa.PrivateKey); !ok || !loadedKey.Equal(key) {
+		t.Fatal("loaded key is not the first private key")
 	}
 }

@@ -58,7 +58,7 @@ func TestSound(t *testing.T) {
 }
 
 func TestSoundDictionary(t *testing.T) {
-	payload := NewPayload().Sound(map[string]interface{}{
+	payload := NewPayload().Sound(map[string]any{
 		"critical": 1,
 		"name":     "default",
 		"volume":   0.8,
@@ -94,7 +94,7 @@ func TestCustom(t *testing.T) {
 }
 
 func TestCustomMap(t *testing.T) {
-	payload := NewPayload().Custom("key", map[string]interface{}{
+	payload := NewPayload().Custom("key", map[string]any{
 		"map": 1,
 	})
 	b, _ := json.Marshal(payload)
@@ -208,7 +208,7 @@ func TestCategory(t *testing.T) {
 }
 
 func TestContentState(t *testing.T) {
-	payload := NewPayload().SetContentState(map[string]interface{}{"my_int": 13, "my_string": "foo"})
+	payload := NewPayload().SetContentState(map[string]any{"my_int": 13, "my_string": "foo"})
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"content-state":{"my_int":13,"my_string":"foo"}}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -268,7 +268,7 @@ func TestAttributesType(t *testing.T) {
 }
 
 func TestAttributes(t *testing.T) {
-	attributes := map[string]interface{}{
+	attributes := map[string]any{
 		"currentHealthLevel": 100,
 		"eventDescription":   "Adventure has begun!",
 	}
@@ -306,7 +306,7 @@ func TestURLArgs(t *testing.T) {
 func TestSoundName(t *testing.T) {
 	payload := NewPayload().SoundName("test")
 	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"sound":{"critical":1,"name":"test","volume":1}}}`; !reflect.DeepEqual(got, want) {
+	if got, want := string(b), `{"aps":{"sound":{"name":"test"}}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -314,7 +314,7 @@ func TestSoundName(t *testing.T) {
 func TestSoundVolume(t *testing.T) {
 	payload := NewPayload().SoundVolume(0.5)
 	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"sound":{"critical":1,"name":"default","volume":0.5}}}`; !reflect.DeepEqual(got, want) {
+	if got, want := string(b), `{"aps":{"sound":{"name":"default","volume":0.5}}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -396,5 +396,30 @@ func TestCombined(t *testing.T) {
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"alert":"hello","badge":1,"interruption-level":"active","relevance-score":0.1,"sound":"Default.caf"},"key":"val"}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestSoundDeliveryIsExplicit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		payload *Payload
+		want    string
+	}{
+		{"named sound", NewPayload().SoundName("bell"), `{"aps":{"sound":{"name":"bell"}}}`},
+		{"volume", NewPayload().Sound("bell").SoundVolume(0.5), `{"aps":{"sound":{"name":"bell","volume":0.5}}}`},
+		{"silent volume", NewPayload().SoundVolume(0), `{"aps":{"sound":{"name":"default","volume":0}}}`},
+		{"critical", NewPayload().CriticalSound("bell", 0.8), `{"aps":{"sound":{"critical":1,"name":"bell","volume":0.8}}}`},
+		{"silent critical", NewPayload().CriticalSound("bell", 0), `{"aps":{"sound":{"critical":1,"name":"bell","volume":0}}}`},
+		{"edit critical", NewPayload().CriticalSound("bell", 1).SoundName("alarm").SoundVolume(0.5), `{"aps":{"sound":{"critical":1,"name":"alarm","volume":0.5}}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b, err := json.Marshal(test.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != test.want {
+				t.Errorf("payload = %s, want %s", b, test.want)
+			}
+		})
 	}
 }

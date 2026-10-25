@@ -15,12 +15,6 @@ linters:
         - reflectvaluecompare
         - sortslice
         - unusedwrite
-  exclusions:
-    rules:
-      - path: ^client(_test)?\.go$
-        linters:
-          - staticcheck
-        text: 'SA1019:.*golang\.org/x/net/http2\.Transport'
 
 formatters:
   enable:

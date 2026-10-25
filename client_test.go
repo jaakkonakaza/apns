@@ -12,11 +12,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
-
-	"golang.org/x/net/http2"
 
 	apns "github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/certificate"
@@ -43,11 +42,11 @@ func mockCert() tls.Certificate {
 }
 
 func mockClient(url string) *apns.Client {
-	return &apns.Client{Host: url, HTTPClient: http.DefaultClient}
+	return &apns.Client{Host: url, HTTPClient: &http.Client{}}
 }
 
 type mockTransport struct {
-	*http2.Transport
+	*http.Transport
 	closed bool
 }
 
@@ -140,8 +139,7 @@ func TestClientNameToCertificate(t *testing.T) {
 	crt, _ := certificate.FromP12File("certificate/testdata/certificate-valid.p12", "")
 	client := apns.NewClient(crt)
 
-	// Check if the client's certificate is set correctly
-	clientCerts := client.HTTPClient.Transport.(*http2.Transport).TLSClientConfig.Certificates
+	clientCerts := client.HTTPClient.Transport.(*http.Transport).TLSClientConfig.Certificates
 	if got, want := len(clientCerts), 1; got != want {
 		t.Errorf("length = %d, want %d", got, want)
 	}
@@ -153,8 +151,7 @@ func TestClientNameToCertificate(t *testing.T) {
 	certificate2 := tls.Certificate{}
 	client2 := apns.NewClient(certificate2)
 
-	// Check if the client's certificate is empty
-	clientCerts2 := client2.HTTPClient.Transport.(*http2.Transport).TLSClientConfig.Certificates
+	clientCerts2 := client2.HTTPClient.Transport.(*http.Transport).TLSClientConfig.Certificates
 	if got, want := len(clientCerts2), 1; got != want {
 		t.Errorf("length = %d, want %d", got, want)
 	}
@@ -163,41 +160,44 @@ func TestClientNameToCertificate(t *testing.T) {
 	}
 }
 
+// Exercise the constructor's actual dialer against a peer that never completes TLS.
 func TestDialTLSTimeout(t *testing.T) {
-	apns.TLSDialTimeout = 10 * time.Millisecond
-	crt, _ := certificate.FromP12File("certificate/testdata/certificate-valid.p12", "")
-	client := apns.NewClient(crt)
-
-	// Replace the DialTLS with DialTLSContext
-	transport := client.HTTPClient.Transport.(*http2.Transport)
-	transport.DialTLSContext = func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-		dialer := &net.Dialer{
-			Timeout: apns.TLSDialTimeout,
-		}
-		return tls.DialWithDialer(dialer, network, addr, nil)
-	}
-
+	originalTimeout := apns.TLSDialTimeout
+	apns.TLSDialTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { apns.TLSDialTimeout = originalTimeout })
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := listener.Addr().String()
-	defer func() {
-		if got := listener.Close(); got != nil {
-			t.Errorf("got %v, want nil", got)
+	defer func() { _ = listener.Close() }()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
 		}
 	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), apns.TLSDialTimeout)
+	client := apns.NewTokenClient(mockToken())
+	defer client.CloseIdleConnections()
+	client.Host = "https://" + listener.Addr().String()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
-	var e error
-	if _, e = transport.DialTLSContext(ctx, "tcp", address, nil); e == nil {
-		t.Fatal("Dial completed successfully")
+	started := time.Now()
+	_, err = client.PushWithContext(ctx, mockNotification())
+	if timeout, ok := errors.AsType[net.Error](err); !ok || !timeout.Timeout() {
+		t.Fatalf("dial error = %v, want timeout", err)
 	}
-
-	if !errors.Is(e, context.DeadlineExceeded) {
-		t.Errorf("Unexpected error: %s", e)
+	if ctx.Err() != nil {
+		t.Fatal("request context expired instead of TLSDialTimeout")
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("dial took %s with TLSDialTimeout=%s", elapsed, apns.TLSDialTimeout)
+	}
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case <-time.After(time.Second):
+		t.Fatal("dialer did not connect to test listener")
 	}
 }
 
@@ -647,7 +647,7 @@ func Test410UnregisteredResponse(t *testing.T) {
 	if got, want := res.Reason, apns.ReasonUnregistered; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.Timestamp.Unix(), int64(1458114061260)/1000; !reflect.DeepEqual(got, want) {
+	if got, want := res.Timestamp.UnixMilli(), int64(1458114061260); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 	if got, want := res.Sent(), false; !reflect.DeepEqual(got, want) {
@@ -669,7 +669,7 @@ func TestMalformedJSONResponse(t *testing.T) {
 	if got := err; got == nil {
 		t.Error("unexpected nil")
 	}
-	if got, want := res.Sent(), false; !reflect.DeepEqual(got, want) {
+	if got, want := res.StatusCode, http.StatusOK; got != want {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -686,5 +686,116 @@ func TestCloseIdleConnections(t *testing.T) {
 	client.CloseIdleConnections()
 	if got, want := transport.closed, true; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+// Exercise the real constructor transport, TLS verification, ALPN, and public
+// dial hook; the other functional tests use the default transport.
+func TestConstructorHTTP2(t *testing.T) {
+	for _, tokenAuth := range []bool{false, true} {
+		t.Run(fmt.Sprintf("token=%t", tokenAuth), func(t *testing.T) {
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.ProtoMajor != 2 {
+					t.Errorf("protocol = %s, want HTTP/2", r.Proto)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			server.EnableHTTP2 = true
+			server.StartTLS()
+			defer server.Close()
+			originalDial := apns.DialTLS
+			called := make(chan *tls.Config, 1)
+			apns.DialTLS = func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+				called <- cfg
+				return tls.Dial(network, addr, cfg)
+			}
+			defer func() { apns.DialTLS = originalDial }()
+			client := apns.NewClient(mockCert())
+			if tokenAuth {
+				client = apns.NewTokenClient(mockToken())
+			}
+			defer client.CloseIdleConnections()
+			client.Host = server.URL
+			transport := client.HTTPClient.Transport.(*http.Transport)
+			transport.TLSClientConfig.RootCAs = server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+			if transport.HTTP2.SendPingTimeout != apns.ReadIdleTimeout {
+				t.Fatal("idle ping timeout was not preserved")
+			}
+			response, err := client.Push(mockNotification())
+			if err != nil || !response.Sent() {
+				t.Fatalf("HTTP/2 push: response=%v, error=%v", response, err)
+			}
+			cfg := <-called
+			if cfg.MinVersion < tls.VersionTLS12 || cfg.ServerName == "" || len(cfg.NextProtos) != 1 || cfg.NextProtos[0] != "h2" {
+				t.Fatalf("dial hook received incorrect TLS config: %+v", cfg)
+			}
+		})
+	}
+}
+
+func TestConstructorRejectsHTTP1(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("HTTP/1-only server received a push")
+	}))
+	defer server.Close()
+	client := apns.NewClient(mockCert())
+	defer client.CloseIdleConnections()
+	client.Host = server.URL
+	transport := client.HTTPClient.Transport.(*http.Transport)
+	transport.TLSClientConfig.RootCAs = server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	if _, err := client.Push(mockNotification()); err == nil {
+		t.Fatal("HTTP/1-only endpoint accepted")
+	}
+}
+
+func TestConstructorRejectsNoALPN(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("server without ALPN received a push")
+	}))
+	server.TLS = &tls.Config{
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			cfg := server.TLS.Clone()
+			cfg.GetConfigForClient = nil
+			cfg.NextProtos = nil
+			return cfg, nil
+		},
+	}
+	server.StartTLS()
+	defer server.Close()
+	for _, customDial := range []bool{false, true} {
+		t.Run(fmt.Sprintf("customDial=%t", customDial), func(t *testing.T) {
+			originalDial := apns.DialTLS
+			apns.DialTLS = nil
+			if customDial {
+				apns.DialTLS = func(network, addr string, cfg *tls.Config) (net.Conn, error) { return tls.Dial(network, addr, cfg) }
+			}
+			defer func() { apns.DialTLS = originalDial }()
+			client := apns.NewTokenClient(mockToken())
+			defer client.CloseIdleConnections()
+			client.Host = server.URL
+			transport := client.HTTPClient.Transport.(*http.Transport)
+			transport.TLSClientConfig.RootCAs = server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+			_, err := client.Push(mockNotification())
+			if err == nil {
+				t.Fatal("endpoint without ALPN accepted")
+			}
+			if _, ok := errors.AsType[*url.Error](err); !ok {
+				t.Fatalf("protocol error = %T %v, want *url.Error", err, err)
+			}
+		})
+	}
+}
+
+func TestConstructorRejectsPlaintext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("plaintext server received a push")
+	}))
+	defer server.Close()
+	for _, client := range []*apns.Client{apns.NewClient(mockCert()), apns.NewTokenClient(mockToken())} {
+		client.Host = server.URL
+		defer client.CloseIdleConnections()
+		if _, err := client.Push(mockNotification()); err == nil {
+			t.Error("plaintext endpoint accepted")
+		}
 	}
 }

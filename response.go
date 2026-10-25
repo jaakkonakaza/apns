@@ -158,6 +158,6 @@ func (t *Time) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return err
 	}
-	t.Time = time.Unix(ts/1000, 0)
+	t.Time = time.UnixMilli(ts)
 	return nil
 }

@@ -53,15 +53,13 @@ func TestClientManagerAddWithoutNew(t *testing.T) {
 		Factory: apns2.NewClient,
 	}
 
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
+	for range 2 {
+		wg.Go(func() {
 			manager.Add(apns2.NewClient(mockCert()))
 			if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
 				t.Errorf("got %#v, want %#v", got, want)
 			}
-			wg.Done()
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -148,7 +146,7 @@ func TestClientManagerGetMaxAgeExpirationWithNilFactory(t *testing.T) {
 	if got := c2; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
-	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
+	if got, want := manager.Len(), 0; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }

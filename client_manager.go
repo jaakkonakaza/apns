@@ -8,13 +8,22 @@ import (
 	"time"
 )
 
+type pendingClient struct {
+	done   chan struct{}
+	client *Client
+	added  *Client // Latest explicit Add while Factory is running. Protected by the manager mutex.
+}
+
 type managerItem struct {
 	key      [sha1.Size]byte
 	client   *Client
 	lastUsed time.Time
 }
 
-// ClientManager is a way to manage multiple connections to the APNs.
+// ClientManager manages cached APNs clients. Set its configuration before
+// concurrent use. Factory runs without the manager lock, and concurrent Gets
+// for the same certificate share one Factory call. Factory may use the manager,
+// but must not Get the certificate it is building.
 type ClientManager struct {
 	// MaxSize is the maximum number of clients allowed in the manager. When
 	// this limit is reached, the least recently used client is evicted. Set
@@ -23,18 +32,19 @@ type ClientManager struct {
 
 	// MaxAge is the maximum age of clients in the manager. Upon retrieval, if
 	// a client has remained unused in the manager for this duration or longer,
-	// it is evicted and nil is returned. Set zero to disable this
-	// functionality.
+	// it is replaced using Factory, or evicted if Factory returns nil. Set zero
+	// to disable expiration.
 	MaxAge time.Duration
 
 	// Factory is the function which constructs clients if not found in the
 	// manager.
 	Factory func(certificate tls.Certificate) *Client
 
-	cache map[[sha1.Size]byte]*list.Element
-	ll    *list.List
-	mu    sync.Mutex
-	once  sync.Once
+	cache   map[[sha1.Size]byte]*list.Element
+	pending map[[sha1.Size]byte]*pendingClient
+	ll      *list.List
+	mu      sync.Mutex
+	once    sync.Once
 }
 
 // NewClientManager returns a new ClientManager for prolonged, concurrent usage
@@ -63,66 +73,97 @@ func NewClientManager() *ClientManager {
 func (m *ClientManager) Add(client *Client) {
 	m.initInternals()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := cacheKey(client.Certificate)
-	now := time.Now()
+	retired := m.addLocked(key, client, time.Now())
+	if call := m.pending[key]; call != nil {
+		call.added = client
+	}
+	m.mu.Unlock()
+	closeClientIdleConnections(retired)
+}
+
+func (m *ClientManager) addLocked(key [sha1.Size]byte, client *Client, now time.Time) *Client {
 	if ele, hit := m.cache[key]; hit {
 		item := ele.Value.(*managerItem)
+		old := item.client
 		item.client = client
 		item.lastUsed = now
 		m.ll.MoveToFront(ele)
-		return
+		if old != client {
+			return old
+		}
+		return nil
 	}
 	ele := m.ll.PushFront(&managerItem{key, client, now})
 	m.cache[key] = ele
 	if m.MaxSize != 0 && m.ll.Len() > m.MaxSize {
-		m.mu.Unlock()
-		m.removeOldest()
-		m.mu.Lock()
+		return m.removeElementLocked(m.ll.Back())
 	}
+	return nil
 }
 
 // Get gets a Client from the manager. If a Client is not found in the manager
 // or if a Client has remained in the manager longer than MaxAge, Get will call
 // the ClientManager's Factory function, store the result in the manager if
-// non-nil, and return it.
-func (m *ClientManager) Get(certificate tls.Certificate) *Client {
+// non-nil, and return it. If Add supplies a client while Factory is running,
+// Get returns the added client.
+func (m *ClientManager) Get(certificate tls.Certificate) (client *Client) {
 	m.initInternals()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := cacheKey(certificate)
-	now := time.Now()
+	m.mu.Lock()
+	var stale *Client
 	if ele, hit := m.cache[key]; hit {
 		item := ele.Value.(*managerItem)
-		if m.MaxAge != 0 && item.lastUsed.Before(now.Add(-m.MaxAge)) {
-			c := m.Factory(certificate)
-			if c == nil {
-				return nil
-			}
-			item.client = c
+		now := time.Now()
+		if m.MaxAge == 0 || item.lastUsed.After(now.Add(-m.MaxAge)) {
+			item.lastUsed = now
+			m.ll.MoveToFront(ele)
+			cached := item.client
+			m.mu.Unlock()
+			return cached
 		}
-		item.lastUsed = now
-		m.ll.MoveToFront(ele)
-		return item.client
+		stale = item.client
 	}
-
-	c := m.Factory(certificate)
-	if c == nil {
-		return nil
+	if call, ok := m.pending[key]; ok {
+		m.mu.Unlock()
+		<-call.done
+		return call.client
 	}
+	call := &pendingClient{done: make(chan struct{})}
+	m.pending[key] = call
+	factory := m.Factory
 	m.mu.Unlock()
-	m.Add(c)
-	m.mu.Lock()
-	return c
+
+	completed := false
+	defer func() {
+		var retired *Client
+		m.mu.Lock()
+		delete(m.pending, key)
+		if call.added != nil {
+			if call.client != call.added {
+				retired = call.client
+			}
+			call.client = call.added
+		} else if call.client != nil {
+			retired = m.addLocked(key, call.client, time.Now())
+		} else if ele, hit := m.cache[key]; completed && hit && stale != nil && ele.Value.(*managerItem).client == stale {
+			retired = m.removeElementLocked(ele)
+		}
+		client = call.client
+		m.mu.Unlock()
+		close(call.done)
+		closeClientIdleConnections(retired)
+	}()
+	if factory != nil {
+		call.client = factory(certificate)
+	}
+	completed = true
+	return call.client
 }
 
 // Len returns the current size of the ClientManager.
 func (m *ClientManager) Len() int {
-	if m.cache == nil {
-		return 0
-	}
+	m.initInternals()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.ll.Len()
@@ -131,24 +172,22 @@ func (m *ClientManager) Len() int {
 func (m *ClientManager) initInternals() {
 	m.once.Do(func() {
 		m.cache = map[[sha1.Size]byte]*list.Element{}
+		m.pending = map[[sha1.Size]byte]*pendingClient{}
 		m.ll = list.New()
 	})
 }
 
-func (m *ClientManager) removeOldest() {
-	m.mu.Lock()
-	ele := m.ll.Back()
-	m.mu.Unlock()
-	if ele != nil {
-		m.removeElement(ele)
-	}
+func (m *ClientManager) removeElementLocked(e *list.Element) *Client {
+	m.ll.Remove(e)
+	item := e.Value.(*managerItem)
+	delete(m.cache, item.key)
+	return item.client
 }
 
-func (m *ClientManager) removeElement(e *list.Element) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ll.Remove(e)
-	delete(m.cache, e.Value.(*managerItem).key)
+func closeClientIdleConnections(client *Client) {
+	if client != nil && client.HTTPClient != nil {
+		client.CloseIdleConnections()
+	}
 }
 
 func cacheKey(certificate tls.Certificate) [sha1.Size]byte {

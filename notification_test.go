@@ -10,7 +10,7 @@ import (
 
 func TestMarshalJSON(t *testing.T) {
 	scenarios := []struct {
-		in  interface{}
+		in  any
 		out []byte
 		err error
 	}{

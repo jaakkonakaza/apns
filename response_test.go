@@ -29,7 +29,7 @@ func TestIntTimestampParse(t *testing.T) {
 	if got := json.Unmarshal([]byte(payload), &response); got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
-	if got, want := response.Timestamp.Unix(), int64(1458114061260)/1000; !reflect.DeepEqual(got, want) {
+	if got, want := response.Timestamp.UnixMilli(), int64(1458114061260); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }

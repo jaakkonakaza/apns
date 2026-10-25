@@ -62,7 +62,7 @@ func TestInputValidation(t *testing.T) {
 
 func TestCLISend(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 2 || r.Method != http.MethodPost || r.URL.Path != "/3/device/device-token" {
+		if r.ProtoMajor != 2 || r.Method != http.MethodPost || r.URL.Path != "/3/device/aabbcc" {
 			t.Errorf("unexpected request: %s %s %s", r.Proto, r.Method, r.URL.Path)
 		}
 		if r.Header.Get("apns-topic") != "com.example" {
@@ -87,7 +87,7 @@ func TestCLISend(t *testing.T) {
 	}
 	var output bytes.Buffer
 	args := []string{"--certificate-path=../../certificate/testdata/certificate-valid.pem", "--topic=com.example"}
-	if err := run(args, strings.NewReader("device-token "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard); err != nil {
+	if err := run(args, strings.NewReader("aabbcc "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "200: ''\n" {

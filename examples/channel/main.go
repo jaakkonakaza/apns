@@ -33,7 +33,7 @@ func main() {
 
 	client := apns2.NewClient(cert).Production()
 
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		go worker(client, notifications, responses)
 	}
 

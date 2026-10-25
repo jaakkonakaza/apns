@@ -37,27 +37,27 @@ const (
 // Payload represents a notification which holds the content that will be
 // marshalled as JSON.
 type Payload struct {
-	content map[string]interface{}
+	content map[string]any
 }
 
 type aps struct {
-	Alert             interface{}            `json:"alert,omitempty"`
-	Badge             interface{}            `json:"badge,omitempty"`
-	Category          string                 `json:"category,omitempty"`
-	ContentAvailable  int                    `json:"content-available,omitempty"`
-	InterruptionLevel EInterruptionLevel     `json:"interruption-level,omitempty"`
-	MutableContent    int                    `json:"mutable-content,omitempty"`
-	RelevanceScore    interface{}            `json:"relevance-score,omitempty"`
-	Sound             interface{}            `json:"sound,omitempty"`
-	ThreadID          string                 `json:"thread-id,omitempty"`
-	URLArgs           []string               `json:"url-args,omitempty"`
-	ContentState      map[string]interface{} `json:"content-state,omitempty"`
-	DismissalDate     int64                  `json:"dismissal-date,omitempty"`
-	StaleDate         int64                  `json:"stale-date,omitempty"`
-	Event             ELiveActivityEvent     `json:"event,omitempty"`
-	Timestamp         int64                  `json:"timestamp,omitempty"`
-	AttributesType    string                 `json:"attributes-type,omitempty"`
-	Attributes        map[string]interface{} `json:"attributes,omitempty"`
+	Alert             any                `json:"alert,omitempty"`
+	Badge             any                `json:"badge,omitempty"`
+	Category          string             `json:"category,omitempty"`
+	ContentAvailable  int                `json:"content-available,omitempty"`
+	InterruptionLevel EInterruptionLevel `json:"interruption-level,omitempty"`
+	MutableContent    int                `json:"mutable-content,omitempty"`
+	RelevanceScore    any                `json:"relevance-score,omitempty"`
+	Sound             any                `json:"sound,omitempty"`
+	ThreadID          string             `json:"thread-id,omitempty"`
+	URLArgs           []string           `json:"url-args,omitempty"`
+	ContentState      map[string]any     `json:"content-state,omitempty"`
+	DismissalDate     int64              `json:"dismissal-date,omitempty"`
+	StaleDate         int64              `json:"stale-date,omitempty"`
+	Event             ELiveActivityEvent `json:"event,omitempty"`
+	Timestamp         int64              `json:"timestamp,omitempty"`
+	AttributesType    string             `json:"attributes-type,omitempty"`
+	Attributes        map[string]any     `json:"attributes,omitempty"`
 }
 
 type alert struct {
@@ -78,15 +78,15 @@ type alert struct {
 }
 
 type sound struct {
-	Critical int     `json:"critical,omitempty"`
-	Name     string  `json:"name,omitempty"`
-	Volume   float32 `json:"volume,omitempty"`
+	Critical int      `json:"critical,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Volume   *float32 `json:"volume,omitempty"`
 }
 
 // NewPayload returns a new Payload struct
 func NewPayload() *Payload {
 	return &Payload{
-		map[string]interface{}{
+		map[string]any{
 			"aps": &aps{},
 		},
 	}
@@ -96,7 +96,7 @@ func NewPayload() *Payload {
 // This will display a notification alert message to the user.
 //
 //	{"aps":{"alert":alert}}`
-func (p *Payload) Alert(alert interface{}) *Payload {
+func (p *Payload) Alert(alert any) *Payload {
 	p.aps().Alert = alert
 	return p
 }
@@ -105,7 +105,7 @@ func (p *Payload) Alert(alert interface{}) *Payload {
 // This will update content-state of live activity widget.
 //
 //	{"aps":{"content-state": {} }}`
-func (p *Payload) SetContentState(contentState map[string]interface{}) *Payload {
+func (p *Payload) SetContentState(contentState map[string]any) *Payload {
 	p.aps().ContentState = contentState
 	return p
 }
@@ -159,7 +159,7 @@ func (p *Payload) SetAttributesType(attributesType string) *Payload {
 // This is used for push-to-start live activities
 //
 //	{"aps":{"attributes": attributes }}`
-func (p *Payload) SetAttributes(attributes map[string]interface{}) *Payload {
+func (p *Payload) SetAttributes(attributes map[string]any) *Payload {
 	p.aps().Attributes = attributes
 	return p
 }
@@ -196,7 +196,7 @@ func (p *Payload) UnsetBadge() *Payload {
 // This will play a sound from the app bundle, or the default sound otherwise.
 //
 //	{"aps":{"sound":sound}}
-func (p *Payload) Sound(sound interface{}) *Payload {
+func (p *Payload) Sound(sound any) *Payload {
 	p.aps().Sound = sound
 	return p
 }
@@ -227,7 +227,7 @@ func (p *Payload) MutableContent() *Payload {
 // This will add custom key/value data to the notification payload at root level.
 //
 //	{"aps":{}, key:value}
-func (p *Payload) Custom(key string, val interface{}) *Payload {
+func (p *Payload) Custom(key string, val any) *Payload {
 	p.content[key] = val
 	return p
 }
@@ -430,23 +430,22 @@ func (p *Payload) URLArgs(urlArgs []string) *Payload {
 	return p
 }
 
-// SoundName sets the name value on the aps sound dictionary.
-// This function makes the notification a critical alert, which should be pre-approved by Apple.
-// See: https://developer.apple.com/contact/request/notifications-critical-alerts-entitlement/
-//
-// {"aps":{"sound":{"critical":1,"name":name,"volume":1.0}}}
+// SoundName sets the name in the aps sound dictionary.
 func (p *Payload) SoundName(name string) *Payload {
 	p.aps().sound().Name = name
 	return p
 }
 
-// SoundVolume sets the volume value on the aps sound dictionary.
-// This function makes the notification a critical alert, which should be pre-approved by Apple.
-// See: https://developer.apple.com/contact/request/notifications-critical-alerts-entitlement/
-//
-// {"aps":{"sound":{"critical":1,"name":"default","volume":volume}}}
+// SoundVolume sets the volume in the aps sound dictionary, preserving zero.
+// This does not enable critical delivery.
 func (p *Payload) SoundVolume(volume float32) *Payload {
-	p.aps().sound().Volume = volume
+	p.aps().sound().Volume = &volume
+	return p
+}
+
+// CriticalSound sets a critical alert sound. Critical alerts require Apple's entitlement.
+func (p *Payload) CriticalSound(name string, volume float32) *Payload {
+	p.aps().Sound = &sound{Critical: 1, Name: name, Volume: &volume}
 	return p
 }
 
@@ -501,7 +500,11 @@ func (a *aps) alert() *alert {
 
 func (a *aps) sound() *sound {
 	if _, ok := a.Sound.(*sound); !ok {
-		a.Sound = &sound{Critical: 1, Name: "default", Volume: 1.0}
+		name, ok := a.Sound.(string)
+		if !ok {
+			name = "default"
+		}
+		a.Sound = &sound{Name: name}
 	}
 	return a.Sound.(*sound)
 }

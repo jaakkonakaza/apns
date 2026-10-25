@@ -75,13 +75,9 @@ func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
 	}, nil
 }
 
-// FromPemFile loads a PEM certificate from a local file and returns a
-// tls.Certificate. This function is similar to the crypto/tls LoadX509KeyPair
-// function, however it supports PEM files with the cert and key combined
-// in the same file. It does not support password-protected key files due
-// to security concerns with the deprecated PEM encryption method.
-//
-// The password argument is kept for backwards compatibility but is no longer used.
+// FromPemFile loads a certificate chain and matching private key from a combined
+// PEM file. Password-protected PEM keys are unsupported, the password argument
+// is ignored.
 func FromPemFile(filename string, password string) (tls.Certificate, error) {
 	bytes, err := os.ReadFile(filename)
 	if err != nil {
@@ -90,47 +86,39 @@ func FromPemFile(filename string, password string) (tls.Certificate, error) {
 	return FromPemBytes(bytes, password)
 }
 
-// FromPemBytes loads a PEM certificate from an in memory byte array and
-// returns a tls.Certificate. This function is similar to the crypto/tls
-// X509KeyPair function, however it supports PEM files with the cert and
-// key combined, as well as password protected keys which are both common with
-// APNs certificates.
-//
-// Use "" as the password argument if the PEM certificate is not password
-// protected.
+// FromPemBytes loads a certificate chain and matching private key from combined
+// PEM data. It supports PKCS#1, PKCS#8, and SEC1 private keys.
+// Password-protected PEM keys are unsupported, the password argument is ignored.
 func FromPemBytes(bytes []byte, password string) (tls.Certificate, error) {
-	var cert tls.Certificate
-	var block *pem.Block
-	for {
-		block, bytes = pem.Decode(bytes)
+	// Validate the same blocks tls.X509KeyPair uses: the first certificate is
+	// the leaf and the first private key must match it.
+	var leaf, key *pem.Block
+	for rest := bytes; ; {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
 		if block == nil {
 			break
 		}
-		if block.Type == "CERTIFICATE" {
-			cert.Certificate = append(cert.Certificate, block.Bytes)
+		if leaf == nil && block.Type == "CERTIFICATE" {
+			leaf = block
 		}
-		if strings.HasSuffix(block.Type, "PRIVATE KEY") {
-			key, err := unencryptPrivateKey(block, password)
-			if err != nil {
-				return tls.Certificate{}, err
-			}
-			cert.PrivateKey = key
+		if key == nil && strings.HasSuffix(block.Type, "PRIVATE KEY") {
+			key = block
 		}
 	}
-	if len(cert.Certificate) == 0 {
+	if leaf == nil {
 		return tls.Certificate{}, ErrNoCertificate
 	}
-	if cert.PrivateKey == nil {
+	if key == nil {
 		return tls.Certificate{}, ErrNoPrivateKey
 	}
-	if c, e := x509.ParseCertificate(cert.Certificate[0]); e == nil {
-		cert.Leaf = c
+	if _, err := x509.ParseCertificate(leaf.Bytes); err != nil {
+		return tls.Certificate{}, ErrFailedToParseCertificate
 	}
-	return cert, nil
-}
-
-func unencryptPrivateKey(block *pem.Block, password string) (crypto.PrivateKey, error) {
-	return parsePrivateKey(block.Bytes)
+	if _, err := parsePrivateKey(key.Bytes); err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.X509KeyPair(bytes, bytes)
 }
 
 func parsePrivateKey(bytes []byte) (crypto.PrivateKey, error) {
@@ -140,6 +128,10 @@ func parsePrivateKey(bytes []byte) (crypto.PrivateKey, error) {
 		return key, nil
 	}
 	key, err = x509.ParsePKCS8PrivateKey(bytes)
+	if err == nil {
+		return key, nil
+	}
+	key, err = x509.ParseECPrivateKey(bytes)
 	if err == nil {
 		return key, nil
 	}

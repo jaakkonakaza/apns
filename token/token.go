@@ -32,6 +32,9 @@ var (
 )
 
 // Token represents an Apple Provider Authentication Token (JSON Web Token).
+// Set AuthKey, KeyID, and TeamID before sharing a token and do not change them
+// during use. Its methods are safe to call concurrently. Direct access to
+// IssuedAt and Bearer requires holding Mutex, do not call methods while holding it.
 type Token struct {
 	sync.Mutex
 	AuthKey  *ecdsa.PrivateKey
@@ -63,31 +66,53 @@ func AuthKeyFromBytes(bytes []byte) (*ecdsa.PrivateKey, error) {
 		return nil, err
 	}
 	if pk, ok := key.(*ecdsa.PrivateKey); ok {
+		if pk.Curve != elliptic.P256() {
+			return nil, ErrAuthKeyCurve
+		}
 		return pk, nil
 	}
 	return nil, ErrAuthKeyNotECDSA
 }
 
-// GenerateIfExpired checks to see if the token is about to expire and
-// generates a new token.
-func (t *Token) GenerateIfExpired() (bearer string) {
-	t.Lock()
-	defer t.Unlock()
-	if t.Expired() {
-		// Preserve this method's existing behavior of returning the cached bearer
-		// when signing fails. Call Generate directly to receive signing errors.
-		_, _ = t.Generate()
-	}
-	return t.Bearer
+// GenerateIfExpired returns a cached token or refreshes it. It returns an empty
+// string if signing fails. Use GenerateIfExpiredWithError to receive the error.
+func (t *Token) GenerateIfExpired() string {
+	bearer, _ := t.GenerateIfExpiredWithError()
+	return bearer
 }
 
-// Expired checks to see if the token has expired.
+// GenerateIfExpiredWithError returns a cached token or refreshes it, returning
+// any signing error without returning an expired bearer token.
+func (t *Token) GenerateIfExpiredWithError() (string, error) {
+	t.Lock()
+	defer t.Unlock()
+	if t.Bearer == "" || t.expiredLocked() {
+		if _, err := t.generateLocked(); err != nil {
+			return "", err
+		}
+	}
+	return t.Bearer, nil
+}
+
+// Expired checks whether the token has expired.
 func (t *Token) Expired() bool {
-	return time.Now().Unix() >= (t.IssuedAt + TokenTimeout)
+	t.Lock()
+	defer t.Unlock()
+	return t.expiredLocked()
+}
+
+func (t *Token) expiredLocked() bool {
+	return time.Now().Unix() >= t.IssuedAt+TokenTimeout
 }
 
 // Generate creates a new token.
 func (t *Token) Generate() (bool, error) {
+	t.Lock()
+	defer t.Unlock()
+	return t.generateLocked()
+}
+
+func (t *Token) generateLocked() (bool, error) {
 	if t.AuthKey == nil {
 		return false, ErrAuthKeyNil
 	}

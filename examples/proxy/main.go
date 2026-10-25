@@ -1,13 +1,11 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"time"
 
 	"github.com/sideshow/apns2"
@@ -15,47 +13,37 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	certPath := flag.String("cert", "", "Path to .p12 certificate file (Required)")
 	token := flag.String("token", "", "Push token (Required)")
 	topic := flag.String("topic", "", "Topic (Required)")
 	proxy := flag.String("proxy", "", "Proxy URL (Required)")
 	flag.Parse()
 
-	if *certPath == "" || *token == "" || *topic == "" {
+	if *certPath == "" || *token == "" || *topic == "" || *proxy == "" {
 		flag.PrintDefaults()
-		os.Exit(1)
+		return fmt.Errorf("cert, token, topic, and proxy are required")
 	}
 
 	certificate, certErr := certificate.FromP12File(*certPath, "")
 	if certErr != nil {
-		log.Fatal("Cert Error:", certErr)
+		return fmt.Errorf("load certificate: %w", certErr)
 	}
 
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{certificate},
+	proxyURL, err := url.Parse(*proxy)
+	if err != nil {
+		return fmt.Errorf("parse proxy URL: %w", err)
 	}
-
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetHTTP2(true)
-
-	transport := &http.Transport{
-		TLSClientConfig: tlsConfig,
-		Protocols:       protocols,
-		Proxy: func(request *http.Request) (*url.URL, error) {
-			return url.Parse(*proxy)
-		},
-		IdleConnTimeout: 60 * time.Second,
-	}
-
-	client := &apns2.Client{
-		HTTPClient: &http.Client{
-			Transport: transport,
-			Timeout:   apns2.HTTPClientTimeout,
-		},
-		Certificate: certificate,
-		Host:        apns2.DefaultHost,
-	}
+	client := apns2.NewClient(certificate)
+	defer client.CloseIdleConnections()
+	transport := client.HTTPClient.Transport.(*http.Transport)
+	transport.Proxy = http.ProxyURL(proxyURL)
+	transport.IdleConnTimeout = 60 * time.Second
 
 	notification := &apns2.Notification{}
 	notification.DeviceToken = *token
@@ -69,8 +57,9 @@ func main() {
 
 	res, err := client.Push(notification)
 	if err != nil {
-		log.Fatal("Error:", err)
+		return fmt.Errorf("push notification: %w", err)
 	}
 
-	fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
+	_, err = fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
+	return err
 }
