@@ -121,9 +121,9 @@ func TestClientManagerGetMaxSizeExceeded(t *testing.T) {
 	manager.MaxSize = 1
 	cert1 := mockCert()
 	_ = manager.Get(cert1)
-	cert2, _ := certificate.FromP12File("certificate/_fixtures/certificate-valid.p12", "")
+	cert2, _ := certificate.FromP12File("certificate/testdata/certificate-valid.p12", "")
 	_ = manager.Get(cert2)
-	cert3, _ := certificate.FromP12File("certificate/_fixtures/certificate-valid-encrypted.p12", "password")
+	cert3, _ := certificate.FromP12File("certificate/testdata/certificate-valid-encrypted.p12", "password")
 	c := manager.Get(cert3)
 	assert.True(t, bytes.Equal(cert3.Certificate[0], c.Certificate.Certificate[0]))
 	assert.Equal(t, 1, manager.Len())

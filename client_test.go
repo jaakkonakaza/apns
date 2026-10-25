@@ -113,7 +113,7 @@ func TestClientBadDeviceToken(t *testing.T) {
 }
 
 func TestClientNameToCertificate(t *testing.T) {
-	crt, _ := certificate.FromP12File("certificate/_fixtures/certificate-valid.p12", "")
+	crt, _ := certificate.FromP12File("certificate/testdata/certificate-valid.p12", "")
 	client := apns.NewClient(crt)
 
 	// Check if the client's certificate is set correctly
@@ -133,7 +133,7 @@ func TestClientNameToCertificate(t *testing.T) {
 
 func TestDialTLSTimeout(t *testing.T) {
 	apns.TLSDialTimeout = 10 * time.Millisecond
-	crt, _ := certificate.FromP12File("certificate/_fixtures/certificate-valid.p12", "")
+	crt, _ := certificate.FromP12File("certificate/testdata/certificate-valid.p12", "")
 	client := apns.NewClient(crt)
 
 	// Replace the DialTLS with DialTLSContext

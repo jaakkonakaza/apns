@@ -16,12 +16,12 @@ import (
 // AuthToken
 
 func TestValidTokenFromP8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("_fixtures/authkey-valid.p8")
+	_, err := token.AuthKeyFromFile("testdata/authkey-valid.p8")
 	assert.NoError(t, err)
 }
 
 func TestValidTokenFromP8Bytes(t *testing.T) {
-	bytes, _ := os.ReadFile("_fixtures/authkey-valid.p8")
+	bytes, _ := os.ReadFile("testdata/authkey-valid.p8")
 	_, err := token.AuthKeyFromBytes(bytes)
 	assert.NoError(t, err)
 }
@@ -33,17 +33,17 @@ func TestNoSuchFileP8File(t *testing.T) {
 }
 
 func TestInvalidP8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("_fixtures/authkey-invalid.p8")
+	_, err := token.AuthKeyFromFile("testdata/authkey-invalid.p8")
 	assert.Error(t, err)
 }
 
 func TestInvalidPKCS8P8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("_fixtures/authkey-invalid-pkcs8.p8")
+	_, err := token.AuthKeyFromFile("testdata/authkey-invalid-pkcs8.p8")
 	assert.Error(t, err)
 }
 
 func TestInvalidECDSAP8File(t *testing.T) {
-	_, err := token.AuthKeyFromFile("_fixtures/authkey-invalid-ecdsa.p8")
+	_, err := token.AuthKeyFromFile("testdata/authkey-invalid-ecdsa.p8")
 	assert.Error(t, err)
 }
 
@@ -69,7 +69,7 @@ func TestExpiresBeforeAnHour(t *testing.T) {
 }
 
 func TestGenerateIfExpired(t *testing.T) {
-	authKey, _ := token.AuthKeyFromFile("_fixtures/authkey-valid.p8")
+	authKey, _ := token.AuthKeyFromFile("testdata/authkey-valid.p8")
 	token := &token.Token{
 		AuthKey: authKey,
 	}

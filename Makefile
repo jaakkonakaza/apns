@@ -3,9 +3,6 @@ GOVULNCHECK_VERSION := v1.1.4
 TOOLS_DIR := $(CURDIR)/.bin
 GOLANGCI_LINT := $(TOOLS_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-lint
 GOVULNCHECK := $(TOOLS_DIR)/govulncheck-$(GOVULNCHECK_VERSION)/govulncheck
-GO_FILES := $(shell git ls-files --cached --others --exclude-standard '*.go' ':!:vendor/**')
-EXAMPLE_PACKAGES := $(addprefix ./,$(sort $(dir $(filter _example/%,$(GO_FILES)))))
-PACKAGES := ./... $(EXAMPLE_PACKAGES)
 
 .PHONY: tools fmt fmt-check lint build test coverage vuln check
 
@@ -18,24 +15,24 @@ $(GOVULNCHECK):
 	GOBIN="$(dir $(GOVULNCHECK))" go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 fmt: $(GOLANGCI_LINT)
-	$(GOLANGCI_LINT) fmt $(GO_FILES)
+	$(GOLANGCI_LINT) fmt ./...
 
 fmt-check: $(GOLANGCI_LINT)
-	$(GOLANGCI_LINT) fmt --diff $(GO_FILES)
+	$(GOLANGCI_LINT) fmt --diff ./...
 
 lint: $(GOLANGCI_LINT)
-	$(GOLANGCI_LINT) run $(PACKAGES)
+	$(GOLANGCI_LINT) run ./...
 
 build:
-	go build $(PACKAGES)
+	go build ./...
 
 test:
-	go test -race $(PACKAGES)
+	go test -race ./...
 
 coverage:
-	go test -race -covermode=atomic -coverprofile=covprofile $(PACKAGES)
+	go test -race -covermode=atomic -coverprofile=covprofile ./...
 
 vuln: $(GOVULNCHECK)
-	$(GOVULNCHECK) $(PACKAGES)
+	$(GOVULNCHECK) ./...
 
 check: fmt-check lint build test vuln

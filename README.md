@@ -196,7 +196,7 @@ Speed is greatly affected by the location of your server and the quality of your
 
 ## Command line tool
 
-APNS/2 has a command line tool that can be installed from this repository with `go install ./apns2`. Usage:
+APNS/2 has a command line tool that can be installed from this repository with `go install ./cmd/apns2`. Usage:
 
 ```
 apns2 --help

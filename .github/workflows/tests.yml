@@ -41,4 +41,4 @@ jobs:
       - name: Update coverage
         env:
           COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: goveralls -ignore=apns2/main.go -coverprofile=covprofile -service=github
+        run: goveralls -ignore=cmd/apns2/main.go -coverprofile=covprofile -service=github
