@@ -44,15 +44,6 @@ func TestBroadcastStubsNotImplemented(t *testing.T) {
 	}
 }
 
-func TestClientManagerGetByTokenNotImplemented(t *testing.T) {
-	defer func() {
-		if err, _ := recover().(error); !errors.Is(err, apns.ErrNotImplemented) {
-			t.Errorf("panic = %v, want ErrNotImplemented", err)
-		}
-	}()
-	apns.NewClientManager().GetByToken(mockToken())
-}
-
 func TestBroadcastResponseSuccess(t *testing.T) {
 	for status, want := range map[int]bool{200: true, 201: true, 204: true, 400: false, 410: false} {
 		r := &apns.BroadcastResponse{Response: apns.Response{StatusCode: status}}

@@ -55,7 +55,9 @@ func TestClientManagerAddWithoutNew(t *testing.T) {
 
 	for range 2 {
 		wg.Go(func() {
-			manager.Add(apns2.NewClient(mockCert()))
+			if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
+				t.Fatal(err)
+			}
 			if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
 				t.Errorf("got %#v, want %#v", got, want)
 			}
@@ -136,7 +138,9 @@ func TestClientManagerGetMaxAgeExpirationWithNilFactory(t *testing.T) {
 		return nil
 	}
 	manager.MaxAge = time.Nanosecond
-	manager.Add(apns2.NewClient(mockCert()))
+	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
+		t.Fatal(err)
+	}
 	c1 := manager.Get(mockCert())
 	time.Sleep(time.Microsecond)
 	c2 := manager.Get(mockCert())
@@ -176,14 +180,20 @@ func TestClientManagerAdd(t *testing.T) {
 
 	manager := apns2.NewClientManager()
 	manager.Factory = fn
-	manager.Add(apns2.NewClient(mockCert()))
+	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
+		t.Fatal(err)
+	}
 	manager.Get(mockCert())
 }
 
 func TestClientManagerAddTwice(t *testing.T) {
 	manager := apns2.NewClientManager()
-	manager.Add(apns2.NewClient(mockCert()))
-	manager.Add(apns2.NewClient(mockCert()))
+	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
+		t.Fatal(err)
+	}
 	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}

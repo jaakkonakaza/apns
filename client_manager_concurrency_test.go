@@ -54,7 +54,9 @@ func TestClientManagerConcurrentEvictionKeepsCacheConsistent(t *testing.T) {
 		workers.Go(func() {
 			<-start
 			for iteration := range 16 {
-				manager.Add(&Client{Certificate: managerTestCertificate(worker + iteration)})
+				if err := manager.Add(&Client{Certificate: managerTestCertificate(worker + iteration)}); err != nil {
+					t.Error(err)
+				}
 				_ = manager.Len()
 			}
 		})
@@ -81,7 +83,9 @@ func TestClientManagerConcurrentInitializationAndLen(t *testing.T) {
 	for range 16 {
 		workers.Go(func() {
 			<-start
-			manager.Add(&Client{Certificate: managerTestCertificate(1)})
+			if err := manager.Add(&Client{Certificate: managerTestCertificate(1)}); err != nil {
+				t.Error(err)
+			}
 		})
 		workers.Go(func() {
 			<-start
@@ -117,9 +121,13 @@ func TestClientManagerClosesRetiredClientsOutsideLock(t *testing.T) {
 			manager := &ClientManager{MaxSize: 1}
 			retiredTransport := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
 			first := &Client{Certificate: managerTestCertificate(1), httpClient: &http.Client{Transport: retiredTransport}}
-			manager.Add(first)
+			if err := manager.Add(first); err != nil {
+				t.Error(err)
+			}
 			// Re-adding the same client must not close a connection that remains cached.
-			manager.Add(first)
+			if err := manager.Add(first); err != nil {
+				t.Error(err)
+			}
 			if retiredTransport.closed.Load() != 0 {
 				t.Fatal("re-adding a client closed its connections")
 			}
@@ -138,11 +146,15 @@ func TestClientManagerClosesRetiredClientsOutsideLock(t *testing.T) {
 			go func() {
 				switch operation {
 				case "replace":
-					manager.Add(replacement)
+					if err := manager.Add(replacement); err != nil {
+						t.Error(err)
+					}
 				case "expire", "expire-nil":
 					manager.Get(first.Certificate)
 				case "evict":
-					manager.Add(&Client{Certificate: managerTestCertificate(2)})
+					if err := manager.Add(&Client{Certificate: managerTestCertificate(2)}); err != nil {
+						t.Error(err)
+					}
 				}
 				close(done)
 			}()
@@ -176,7 +188,9 @@ func TestClientManagerFactoryRunsWithoutLock(t *testing.T) {
 		<-release
 		return &Client{Certificate: certificate}
 	}
-	manager.Add(&Client{Certificate: cached})
+	if err := manager.Add(&Client{Certificate: cached}); err != nil {
+		t.Error(err)
+	}
 	built := make(chan *Client, 1)
 	go func() { built <- manager.Get(managerTestCertificate(2)) }()
 	<-entered
@@ -199,7 +213,9 @@ func TestClientManagerFactoryRunsWithoutLock(t *testing.T) {
 func TestClientManagerExpiredNilFactoryEvicts(t *testing.T) {
 	certificate := managerTestCertificate(1)
 	manager := &ClientManager{MaxAge: time.Nanosecond, Factory: func(tls.Certificate) *Client { return nil }}
-	manager.Add(&Client{Certificate: certificate})
+	if err := manager.Add(&Client{Certificate: certificate}); err != nil {
+		t.Error(err)
+	}
 	time.Sleep(time.Millisecond)
 	if client := manager.Get(certificate); client != nil || manager.Len() != 0 {
 		t.Fatalf("expired client = %v, cache length = %d", client, manager.Len())
@@ -209,11 +225,15 @@ func TestClientManagerExpiredNilFactoryEvicts(t *testing.T) {
 func TestClientManagerConcurrentGetAndReplace(t *testing.T) {
 	certificate := managerTestCertificate(1)
 	manager := NewClientManager()
-	manager.Add(&Client{Certificate: certificate})
+	if err := manager.Add(&Client{Certificate: certificate}); err != nil {
+		t.Error(err)
+	}
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		for range 10000 {
-			manager.Add(&Client{Certificate: certificate})
+			if err := manager.Add(&Client{Certificate: certificate}); err != nil {
+				t.Error(err)
+			}
 		}
 	})
 	workers.Go(func() {
@@ -253,7 +273,9 @@ func TestClientManagerAddWinsOverPendingFactory(t *testing.T) {
 				if scenario == "refresh-same-client" {
 					stale = explicit
 				}
-				manager.Add(stale)
+				if err := manager.Add(stale); err != nil {
+					t.Error(err)
+				}
 				manager.mu.Lock()
 				manager.ll.Front().Value.(*managerItem).lastUsed = time.Now().Add(-2 * time.Hour)
 				manager.mu.Unlock()
@@ -265,7 +287,9 @@ func TestClientManagerAddWinsOverPendingFactory(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("factory did not start")
 			}
-			manager.Add(explicit)
+			if err := manager.Add(explicit); err != nil {
+				t.Error(err)
+			}
 			if got := manager.Get(certificate); got != explicit {
 				t.Fatal("Add did not publish configured client")
 			}
