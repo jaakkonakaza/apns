@@ -105,8 +105,8 @@ func TestPKCS12RejectsMismatchedPrivateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded, err := certificate.FromP12Bytes(data, "test-password"); err == nil || len(loaded.Certificate) != 0 || loaded.PrivateKey != nil {
-		t.Fatal("accepted a certificate with an unrelated private key")
+	if loaded, err := certificate.FromP12Bytes(data, "test-password"); !errors.Is(err, certificate.ErrKeyMismatch) || len(loaded.Certificate) != 0 || loaded.PrivateKey != nil {
+		t.Fatalf("FromP12Bytes error = %v, want ErrKeyMismatch", err)
 	}
 }
 
@@ -187,5 +187,52 @@ func TestPEMUsesFirstPrivateKey(t *testing.T) {
 	}
 	if loadedKey, ok := loaded.PrivateKey.(*ecdsa.PrivateKey); !ok || !loadedKey.Equal(key) {
 		t.Fatal("loaded key is not the first private key")
+	}
+}
+
+func TestLoadersRejectExpiredCertificate(t *testing.T) {
+	testLoadersRejectValidity(t, time.Now().Add(-2*365*24*time.Hour), time.Now().Add(-time.Hour), certificate.ErrCertificateExpired)
+}
+
+func TestLoadersRejectNotYetValidCertificate(t *testing.T) {
+	testLoadersRejectValidity(t, time.Now().Add(time.Hour), time.Now().Add(365*24*time.Hour), certificate.ErrCertificateNotYetValid)
+}
+
+func testLoadersRejectValidity(t *testing.T, notBefore, notAfter time.Time, want error) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "APNs out-of-validity client"},
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p12, err := pkcs12.Modern2023.Encode(key, leaf, nil, "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := certificate.FromP12Bytes(p12, "test-password"); !errors.Is(err, want) {
+		t.Errorf("FromP12Bytes error = %v, want %v", err, want)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})...)
+	if _, err := certificate.FromPemBytes(combined); !errors.Is(err, want) {
+		t.Errorf("FromPemBytes error = %v, want %v", err, want)
 	}
 }

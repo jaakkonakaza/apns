@@ -1,5 +1,12 @@
 // Package certificate contains functions to load an Apple APNs PKCS#12
 // or PEM certificate from either an in memory byte array or a local file.
+//
+// Apple issues provider certificates as .cer files; export the certificate
+// and its key from Keychain Access as a .p12 file to load them. Provider
+// certificates are valid for a year. The loaders reject certificates outside
+// their validity period with ErrCertificateExpired or ErrCertificateNotYetValid. A process that keeps running still needs a
+// renewed certificate before Leaf.NotAfter. Certificate connections support only a subset of push
+// types; token authentication supports all of them.
 package certificate
 
 import (
@@ -11,6 +18,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 
 	"software.sslmate.com/src/go-pkcs12"
 )
@@ -21,6 +29,9 @@ var (
 	ErrFailedToParseCertificate = errors.New("certificate: failed to parse certificate PEM data")
 	ErrNoPrivateKey             = errors.New("certificate: no private key")
 	ErrNoCertificate            = errors.New("certificate: no certificate")
+	ErrKeyMismatch              = errors.New("certificate: private key does not match certificate")
+	ErrCertificateExpired       = errors.New("certificate: certificate has expired")
+	ErrCertificateNotYetValid   = errors.New("certificate: certificate is not valid yet")
 )
 
 // FromP12File loads a PKCS#12 certificate from a local file and returns a
@@ -61,7 +72,10 @@ func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 	if !bytes.Equal(publicKey, certificateKey) {
-		return tls.Certificate{}, errors.New("certificate: private key does not match certificate")
+		return tls.Certificate{}, ErrKeyMismatch
+	}
+	if err := checkValidity(cert); err != nil {
+		return tls.Certificate{}, err
 	}
 	certificates := make([][]byte, 1, len(chain)+1)
 	certificates[0] = cert.Raw
@@ -111,13 +125,30 @@ func FromPemBytes(bytes []byte) (tls.Certificate, error) {
 	if key == nil {
 		return tls.Certificate{}, ErrNoPrivateKey
 	}
-	if _, err := x509.ParseCertificate(leaf.Bytes); err != nil {
+	cert, err := x509.ParseCertificate(leaf.Bytes)
+	if err != nil {
 		return tls.Certificate{}, ErrFailedToParseCertificate
+	}
+	if err := checkValidity(cert); err != nil {
+		return tls.Certificate{}, err
 	}
 	if _, err := parsePrivateKey(key.Bytes); err != nil {
 		return tls.Certificate{}, err
 	}
 	return tls.X509KeyPair(bytes, bytes)
+}
+
+// checkValidity rejects a certificate outside its validity period. Apple's
+// provider certificates are valid for a year.
+func checkValidity(cert *x509.Certificate) error {
+	now := time.Now()
+	if now.Before(cert.NotBefore) {
+		return ErrCertificateNotYetValid
+	}
+	if now.After(cert.NotAfter) {
+		return ErrCertificateExpired
+	}
+	return nil
 }
 
 func parsePrivateKey(bytes []byte) (crypto.PrivateKey, error) {

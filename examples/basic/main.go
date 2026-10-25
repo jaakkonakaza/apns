@@ -30,6 +30,7 @@ func main() {
 	notification := &apns2.Notification{}
 	notification.DeviceToken = *token
 	notification.Topic = *topic
+	notification.PushType = apns2.PushTypeAlert
 	notification.Payload = []byte(`{
 			"aps" : {
 				"alert" : "Hello!"

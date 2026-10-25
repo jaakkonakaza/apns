@@ -43,92 +43,96 @@ then run `make check` before committing the updates.
 
 ## Example
 
+Token authentication works with every push type. You need a signing key
+(`.p8` file), its Key ID and your Team ID
+[from Apple](https://developer.apple.com/documentation/usernotifications/establishing-a-token-based-connection-to-apns).
+
 ```go
 package main
 
 import (
   "context"
-  "log"
   "fmt"
+  "log"
 
   "github.com/jaakkonakaza/apns2"
-  "github.com/jaakkonakaza/apns2/certificate"
+  "github.com/jaakkonakaza/apns2/token"
 )
 
 func main() {
-
-  cert, err := certificate.FromP12File("../cert.p12", "")
+  authKey, err := token.AuthKeyFromFile("AuthKey_ABC123DEFG.p8")
   if err != nil {
-    log.Fatal("Cert Error:", err)
+    log.Fatal(err)
   }
-
-  notification := &apns2.Notification{}
-  notification.DeviceToken = "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7"
-  notification.Topic = "com.example.app"
-  notification.Payload = []byte(`{"aps":{"alert":"Hello!"}}`) // See Payload section below
+  provider := &token.Token{
+    AuthKey: authKey,
+    KeyID:   "ABC123DEFG", // Certificates, Identifiers & Profiles -> Keys
+    TeamID:  "DEF123GHIJ", // Membership details
+  }
 
   // Use HostDevelopment for builds installed directly from Xcode.
-  client := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
-  res, err := client.Push(context.Background(), notification)
-
+  client := apns2.NewTokenClient(provider, apns2.WithHost(apns2.HostProduction))
+  res, err := client.Push(context.Background(), &apns2.Notification{
+    DeviceToken: "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7",
+    Topic:       "com.example.app",
+    PushType:    apns2.PushTypeAlert,
+    Payload:     []byte(`{"aps":{"alert":"Hello!"}}`), // See Payload section below
+  })
   if err != nil {
-    log.Fatal("Error:", err)
+    log.Fatal(err)
   }
-
-  fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
+  fmt.Println(res.StatusCode, res.ApnsID, res.Reason)
 }
+```
+
+- Team-scoped keys cover a team's topics; topic-specific keys cover their configured topics.
+- New keys are scoped to either development or production. Existing keys that
+  support both environments remain supported. Select the matching APNs host.
+- A signing key doesn’t expire but can be revoked.
+
+Reuse one `*token.Token` per signing identity. For short-lived processes,
+`IssuedAt` and `Restore` let you reuse a previously signed bearer.
+
+### Certificate authentication
+
+Certificates support a subset of push types and are valid for a year. Export the
+certificate and key from Keychain Access as a `.p12` file:
+
+```go
+cert, err := certificate.FromP12File("cert.p12", "password")
+if err != nil {
+  log.Fatal(err)
+}
+client := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
 ```
 
 For a combined PEM certificate and private key, use
 `certificate.FromPemFile("certificate.pem")`. Encrypted PEM keys are unsupported.
 
-## JWT Token Example
-
-Instead of using a `.p12` or `.pem` certificate as above, you can optionally use
-APNs JWT _Provider Authentication Tokens_. First you will need a signing key (`.p8` file), Key ID and Team ID [from Apple](http://help.apple.com/xcode/mac/current/#/dev54d690a66). Once you have these details, you can create a new client:
-
-```go
-authKey, err := token.AuthKeyFromFile("../AuthKey_XXX.p8")
-if err != nil {
-  log.Fatal("token error:", err)
-}
-
-token := &token.Token{
-  AuthKey: authKey,
-  // KeyID from developer account (Certificates, Identifiers & Profiles -> Keys)
-  KeyID:   "ABC123DEFG",
-  // TeamID from developer account (View Account -> Membership)
-  TeamID:  "DEF123GHIJ",
-}
-...
-
-client := apns2.NewTokenClient(token)
-res, err := client.Push(context.Background(), notification)
-```
-
-- You can use one APNs signing key to authenticate tokens for multiple apps.
-- A signing key works for both the development and production environments.
-- A signing key doesn’t expire but can be revoked.
-
 ## Notification
 
-At a minimum, a _Notification_ needs a _DeviceToken_, a _Topic_ and a _Payload_.
+At a minimum, a _Notification_ needs a _DeviceToken_, a _Topic_, a _PushType_
+and a _Payload_.
 
 ```go
 notification := &apns2.Notification{
   DeviceToken: "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7",
-  Topic: "com.example.app",
-  Payload: []byte(`{"aps":{"alert":"Hello!"}}`),
+  Topic:       "com.example.app",
+  PushType:    apns2.PushTypeAlert,
+  Payload:     []byte(`{"aps":{"alert":"Hello!"}}`),
 }
 ```
 
 You can also set an optional _ApnsID_, _Expiration_ or _Priority_.
 
 ```go
-notification.ApnsID =  "40636A2C-C093-493E-936A-2A4333C06DEA"
+notification.ApnsID = "40636a2c-c093-493e-936a-2a4333c06dea"
 notification.Expiration = time.Now()
 notification.Priority = apns2.PriorityLow
 ```
+
+For other push types, set `Priority` and the matching topic suffix too; the
+`PushType` constants name each suffix.
 
 ## Payload
 
@@ -151,6 +155,11 @@ payload := payload.NewPayload().
   ContentState(map[string]any{"progress": 0.5}).
   Timestamp(time.Now()).
   StaleDate(time.Now().Add(5*time.Minute))
+
+notification.PushType = apns2.PushTypeLiveActivity
+notification.Topic = "com.example.app.push-type.liveactivity"
+notification.Priority = apns2.PriorityLow
+notification.Payload = payload
 ```
 
 Refer to the [payload](https://pkg.go.dev/github.com/jaakkonakaza/apns2/payload) docs for more info.

@@ -17,7 +17,7 @@ func TestNewClientManager(t *testing.T) {
 	if got, want := 64, manager.MaxSize; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := 10*time.Minute, manager.MaxAge; !reflect.DeepEqual(got, want) {
+	if got, want := time.Duration(0), manager.MaxAge; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }

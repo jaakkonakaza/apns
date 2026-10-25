@@ -8,8 +8,8 @@ import (
 // StatusSent is a 200 response.
 const StatusSent = http.StatusOK
 
-// The possible Reason error codes returned from APNs. From table 4 in the
-// Handling Notification Responses from APNs article
+// The possible Reason error codes returned from APNs. See
+// https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns
 const (
 	// 400 The collapse identifier exceeds the maximum allowed size
 	ReasonBadCollapseID = "BadCollapseId"
@@ -77,6 +77,14 @@ const (
 	// header was missing or no provider token was specified.
 	ReasonMissingProviderToken = "MissingProviderToken"
 
+	// 403 The key ID in the provider token isn't related to the key ID of the
+	// token used in the first push of this connection. To use this token, open
+	// a new connection.
+	ReasonUnrelatedKeyIDInToken = "UnrelatedKeyIdInToken"
+
+	// 403 The key ID in the provider token doesn't match the environment.
+	ReasonBadEnvironmentKeyIDInToken = "BadEnvironmentKeyIdInToken"
+
 	// 404 The request contained a bad :path value.
 	ReasonBadPath = "BadPath"
 
@@ -89,12 +97,12 @@ const (
 	// 410 The device token is inactive for the specified topic.
 	ReasonUnregistered = "Unregistered"
 
-	// 413 The message payload was too large. See Creating the Remote Notification
-	// Payload in the Apple Local and Remote Notification Programming Guide for
-	// details on maximum payload size.
+	// 413 The message payload was too large. The limit is 4 KB (4096 bytes),
+	// or 5 KB (5120 bytes) for VoIP and broadcast notifications.
 	ReasonPayloadTooLarge = "PayloadTooLarge"
 
-	// 429 The provider token is being updated too often.
+	// 429 The provider token is being updated too often. Update the
+	// authentication token no more than once every 20 minutes.
 	ReasonTooManyProviderTokenUpdates = "TooManyProviderTokenUpdates"
 
 	// 429 Too many requests were made consecutively to the same device token.
@@ -115,9 +123,9 @@ const (
 // surrounding the rejection.
 type Response struct {
 	// The HTTP status code returned by APNs.
-	// A 200 value indicates that the notification was successfully sent.
-	// For a list of other possible status codes, see table 6-4 in the Apple Local
-	// and Remote Notification Programming Guide.
+	// A 200 value indicates that APNs accepted the notification. It does not
+	// confirm delivery to the device.
+	// For the other status codes, see the Reason constants.
 	StatusCode int
 
 	// The APNs error string indicating the reason for the notification failure (if
@@ -134,13 +142,13 @@ type Response struct {
 	// confirmed that the device token was no longer valid for the topic.
 	Timestamp time.Time
 
-	// An identifier that is only available in the Developement enviroment. Use
-	// this to query Delivery Log information for the corresponding notification
-	// in Push Notifications Console.
+	// An identifier that is only available in the Development environment for
+	// device notifications. Use this to query Delivery Log information for the
+	// corresponding notification in Push Notifications Console.
 	ApnsUniqueID string
 }
 
-// Sent returns whether or not the notification was successfully sent.
+// Sent returns whether APNs accepted the notification, without confirming delivery.
 // This is the same as checking if the StatusCode == 200.
 func (c *Response) Sent() bool {
 	return c.StatusCode == StatusSent

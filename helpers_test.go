@@ -14,6 +14,8 @@ import (
 func mockNotification() *apns.Notification {
 	n := &apns.Notification{}
 	n.DeviceToken = "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7"
+	n.Topic = "com.example.app"
+	n.PushType = apns.PushTypeAlert
 	n.Payload = []byte(`{"aps":{"alert":"Hello!"}}`)
 	return n
 }

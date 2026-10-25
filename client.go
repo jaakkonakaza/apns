@@ -19,31 +19,40 @@ import (
 	"github.com/jaakkonakaza/apns2/token"
 )
 
-// Apple HTTP/2 Development & Production urls
+// Apple HTTP/2 Development & Production urls. APNs also accepts port 2197,
+// for example WithHost(HostProduction + ":2197").
 const (
 	HostDevelopment = "https://api.sandbox.push.apple.com"
 	HostProduction  = "https://api.push.apple.com"
 )
 
-// Client represents a connection with the APNs
+// Client represents a connection with the APNs. Certificate records the
+// certificate passed to NewClient, which ClientManager uses as its cache key.
+// Changing it after construction does not change the TLS identity.
 type Client struct {
 	Host        string
 	Certificate tls.Certificate
-	Token       *token.Token
-	httpClient  *http.Client
+	// Token is the provider signing identity. Configure it before use and reuse
+	// it across pushes. Create a new client when changing teams, environments,
+	// or incompatible key scopes because APNs binds identity to the connection,
+	// and after adding topics, transferring apps, or revoking credentials.
+	Token      *token.Token
+	httpClient *http.Client
 }
 
 // NewClient returns a certificate-authenticated client. By default it uses an
 // HTTP client configured for APNs HTTP/2. It connects when Push is first called.
 //
-// As per the Apple APNs Provider API, you should keep a handle on this client
-// so that you can keep your connections with APNs open across multiple
-// notifications; don’t repeatedly open and close connections. APNs treats rapid
-// connection and disconnection as a denial-of-service attack.
+// Reuse the client so its connections to APNs stay open across notifications,
+// for hours or days. APNs may treat repeatedly opening and closing connections
+// as a denial-of-service attack and temporarily block your server. See
+// https://developer.apple.com/documentation/usernotifications/establishing-a-connection-to-apns
 //
 // If your use case involves multiple long-lived connections, consider using
 // the ClientManager, which manages clients for you.
-// WithHTTPClient uses the supplied client's TLS identity instead of certificate.
+//
+// With WithHTTPClient, the supplied client's TLS identity is used instead of
+// certificate.
 func NewClient(certificate tls.Certificate, options ...ClientOption) *Client {
 	client := newClient(&tls.Config{Certificates: []tls.Certificate{certificate}}, options...)
 	client.Certificate = certificate
@@ -53,10 +62,10 @@ func NewClient(certificate tls.Certificate, options ...ClientOption) *Client {
 // NewTokenClient returns a token-authenticated client. By default it uses an
 // HTTP client configured for APNs HTTP/2. It connects when Push is first called.
 //
-// As per the Apple APNs Provider API, you should keep a handle on this client
-// so that you can keep your connections with APNs open across multiple
-// notifications; don’t repeatedly open and close connections. APNs treats rapid
-// connection and disconnection as a denial-of-service attack.
+// Reuse the client so its connections to APNs stay open across notifications,
+// for hours or days. APNs may treat repeatedly opening and closing connections
+// as a denial-of-service attack and temporarily block your server. See
+// https://developer.apple.com/documentation/usernotifications/establishing-a-connection-to-apns
 func NewTokenClient(token *token.Token, options ...ClientOption) *Client {
 	client := newClient(&tls.Config{}, options...)
 	client.Token = token
@@ -97,6 +106,10 @@ func noRedirects(*http.Request, []*http.Request) error {
 // Push sends a Notification to the APNs gateway. Context carries cancellation
 // and deadlines and must not be nil. Push reconnects as needed and returns the
 // APNs response or an error if the request could not be completed.
+//
+// Push does not retry. Correct rejected requests before retrying, back off on
+// ReasonTooManyRequests, and stop sending to a token that returns 410 until the
+// app registers a new one.
 func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	if n == nil {
 		return nil, errors.New("apns2: notification is nil")
@@ -106,6 +119,21 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	}
 	if _, err := hex.DecodeString(n.DeviceToken); err != nil {
 		return nil, fmt.Errorf("apns2: invalid device token: %w", err)
+	}
+	if c.Host == "" {
+		return nil, errors.New("apns2: host is not set; use WithHost(HostProduction) or WithHost(HostDevelopment)")
+	}
+	if n.PushType == "" {
+		return nil, errors.New("apns2: push type is empty")
+	}
+	if n.Topic == "" && c.Token != nil {
+		return nil, errors.New("apns2: topic is required with token authentication")
+	}
+	if len(n.CollapseID) > maxCollapseIDBytes {
+		return nil, fmt.Errorf("apns2: collapse ID exceeds %d bytes", maxCollapseIDBytes)
+	}
+	if n.ApnsID != "" && !canonicalUUID(n.ApnsID) {
+		return nil, errors.New("apns2: apns-id must be a canonical 8-4-4-4-12 UUID")
 	}
 	payload, err := json.Marshal(n)
 	if err != nil {
@@ -131,10 +159,12 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	})
 	request = request.WithContext(requestCtx)
 
+	var bearer string
 	if c.Token != nil {
-		if err := c.setTokenHeader(request); err != nil {
+		if bearer, err = c.Token.Bearer(); err != nil {
 			return nil, err
 		}
+		request.Header.Set("authorization", "bearer "+bearer)
 	}
 
 	setHeaders(request, n)
@@ -174,6 +204,9 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	if body.Timestamp != nil {
 		r.Timestamp = time.UnixMilli(*body.Timestamp)
 	}
+	if c.Token != nil && (r.Reason == ReasonExpiredProviderToken || r.Reason == ReasonInvalidProviderToken) {
+		c.Token.Invalidate(bearer)
+	}
 	return r, nil
 }
 
@@ -184,17 +217,8 @@ func (c *Client) CloseIdleConnections() {
 	c.httpClient.CloseIdleConnections()
 }
 
-func (c *Client) setTokenHeader(r *http.Request) error {
-	bearer, err := c.Token.Bearer()
-	if err != nil {
-		return err
-	}
-	r.Header.Set("authorization", "bearer "+bearer)
-	return nil
-}
-
 func setHeaders(r *http.Request, n *Notification) {
-	r.Header.Set("Content-Type", "application/json; charset=utf-8")
+	r.Header.Set("apns-push-type", string(n.PushType))
 	if n.Topic != "" {
 		r.Header.Set("apns-topic", n.Topic)
 	}
@@ -210,9 +234,29 @@ func setHeaders(r *http.Request, n *Notification) {
 	if !n.Expiration.IsZero() {
 		r.Header.Set("apns-expiration", strconv.FormatInt(max(0, n.Expiration.Unix()), 10))
 	}
-	if n.PushType != "" {
-		r.Header.Set("apns-push-type", string(n.PushType))
-	} else {
-		r.Header.Set("apns-push-type", string(PushTypeAlert))
+}
+
+// maxCollapseIDBytes is Apple's limit for apns-collapse-id.
+const maxCollapseIDBytes = 64
+
+// canonicalUUID reports whether s is 32 hexadecimal digits in the 8-4-4-4-12
+// form APNs uses for apns-id and apns-request-id. Apple documents lowercase,
+// but APNs returns uppercase IDs, so either case is accepted.
+func canonicalUUID(s string) bool {
+	if len(s) != 36 {
+		return false
 	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }

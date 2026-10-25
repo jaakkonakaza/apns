@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -320,7 +321,7 @@ func TestTransportDialerReceivesDeadline(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	client := apns.NewTokenClient(mockToken(), apns.WithDialTimeout(timeout), apns.WithDialTLSContext(dial))
+	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithDialTimeout(timeout), apns.WithDialTLSContext(dial))
 	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -726,10 +727,12 @@ func TestTLSDialerNilResultsReturnError(t *testing.T) {
 				if proxy {
 					options = append(options, apns.WithProxy(http.ProxyURL(&url.URL{Scheme: "https", Host: "proxy.example.com:443"})))
 				}
+				options = append(options, apns.WithHost(apns.HostDevelopment))
 				client := apns.NewTokenClient(mockToken(), options...)
 				defer client.CloseIdleConnections()
-				if _, err := client.Push(context.Background(), mockNotification()); err == nil {
-					t.Fatal("nil TLS connection was accepted")
+				_, err := client.Push(context.Background(), mockNotification())
+				if err == nil || !strings.Contains(err.Error(), "nil connection") {
+					t.Fatalf("push error = %v, want nil connection error", err)
 				}
 			})
 		}

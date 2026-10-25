@@ -83,7 +83,7 @@ func TestBearerRefreshesExpiredToken(t *testing.T) {
 	if err != nil || bearer == "" || bearer == "expired" {
 		t.Fatalf("Bearer() = %q, %v", bearer, err)
 	}
-	if provider.Expired() {
+	if provider.expiredLocked() {
 		t.Fatal("refreshed token is expired")
 	}
 	cached, err := provider.Bearer()
@@ -102,13 +102,12 @@ func TestConcurrentTokenMethods(t *testing.T) {
 	for range 12 {
 		wg.Go(func() {
 			for range 20 {
-				if err := provider.Generate(); err != nil {
-					t.Errorf("Generate = %v", err)
-				}
 				if bearer, err := provider.Bearer(); bearer == "" || err != nil {
 					t.Errorf("refresh = %q, %v", bearer, err)
 				}
-				_ = provider.Expired()
+				if provider.IssuedAt().IsZero() {
+					t.Error("IssuedAt() is zero after Bearer")
+				}
 			}
 		})
 	}

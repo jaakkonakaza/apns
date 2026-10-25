@@ -57,18 +57,6 @@ func TestSound(t *testing.T) {
 	}
 }
 
-func TestSoundDictionary(t *testing.T) {
-	payload := NewPayload().Sound(map[string]any{
-		"critical": 1,
-		"name":     "default",
-		"volume":   0.8,
-	})
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"sound":{"critical":1,"name":"default","volume":0.8}}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
 func TestContentAvailable(t *testing.T) {
 	payload := NewPayload().ContentAvailable()
 	b, _ := json.Marshal(payload)
@@ -193,22 +181,6 @@ func TestAlertLocKey(t *testing.T) {
 	}
 }
 
-func TestAlertAction(t *testing.T) {
-	payload := NewPayload().AlertAction("action")
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"alert":{"action":"action"}}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestAlertActionLocKey(t *testing.T) {
-	payload := NewPayload().AlertActionLocKey("PLAY")
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"alert":{"action-loc-key":"PLAY"}}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
 func TestCategory(t *testing.T) {
 	payload := NewPayload().Category("NEW_MESSAGE_CATEGORY")
 	b, _ := json.Marshal(payload)
@@ -222,6 +194,26 @@ func TestContentState(t *testing.T) {
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"content-state":{"my_int":13,"my_string":"foo"}}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestLiveActivityEmptyDictionaries(t *testing.T) {
+	// Empty Codable state and attribute types still need their required keys.
+	payload := NewPayload().ContentState(map[string]any{}).Attributes(map[string]any{})
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `{"aps":{"content-state":{},"attributes":{}}}`; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	payload.ContentState(nil).Attributes(nil)
+	b, err = json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `{"aps":{}}`; got != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
 
@@ -292,7 +284,7 @@ func TestAttributes(t *testing.T) {
 func TestMdm(t *testing.T) {
 	payload := NewPayload().Mdm("996ac527-9993-4a0a-8528-60b2b3c2f52b")
 	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{},"mdm":"996ac527-9993-4a0a-8528-60b2b3c2f52b"}`; !reflect.DeepEqual(got, want) {
+	if got, want := string(b), `{"mdm":"996ac527-9993-4a0a-8528-60b2b3c2f52b"}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -301,46 +293,6 @@ func TestThreadID(t *testing.T) {
 	payload := NewPayload().ThreadID("THREAD_ID")
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"thread-id":"THREAD_ID"}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestURLArgs(t *testing.T) {
-	payload := NewPayload().URLArgs([]string{"a", "b"})
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"url-args":["a","b"]}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestSoundName(t *testing.T) {
-	payload := NewPayload().SoundName("test")
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"sound":{"name":"test"}}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestSoundVolume(t *testing.T) {
-	payload := NewPayload().SoundVolume(0.5)
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"sound":{"name":"default","volume":0.5}}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestAlertSummaryArg(t *testing.T) {
-	payload := NewPayload().AlertSummaryArg("Robert")
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"alert":{"summary-arg":"Robert"}}}`; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestAlertSummaryArgCount(t *testing.T) {
-	payload := NewPayload().AlertSummaryArgCount(3)
-	b, _ := json.Marshal(payload)
-	if got, want := string(b), `{"aps":{"alert":{"summary-arg-count":3}}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -415,12 +367,10 @@ func TestSoundDeliveryIsExplicit(t *testing.T) {
 		payload *Payload
 		want    string
 	}{
-		{"named sound", NewPayload().SoundName("bell"), `{"aps":{"sound":{"name":"bell"}}}`},
-		{"volume", NewPayload().Sound("bell").SoundVolume(0.5), `{"aps":{"sound":{"name":"bell","volume":0.5}}}`},
-		{"silent volume", NewPayload().SoundVolume(0), `{"aps":{"sound":{"name":"default","volume":0}}}`},
+		{"regular", NewPayload().Sound("bell.caf"), `{"aps":{"sound":"bell.caf"}}`},
+		{"system", NewPayload().Sound("default"), `{"aps":{"sound":"default"}}`},
 		{"critical", NewPayload().CriticalSound("bell", 0.8), `{"aps":{"sound":{"critical":1,"name":"bell","volume":0.8}}}`},
 		{"silent critical", NewPayload().CriticalSound("bell", 0), `{"aps":{"sound":{"critical":1,"name":"bell","volume":0}}}`},
-		{"edit critical", NewPayload().CriticalSound("bell", 1).SoundName("alarm").SoundVolume(0.5), `{"aps":{"sound":{"critical":1,"name":"alarm","volume":0.5}}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			b, err := json.Marshal(test.payload)
@@ -460,5 +410,125 @@ func TestLiveActivityDatePresence(t *testing.T) {
 				t.Fatalf("zero time was not omitted: %s", b)
 			}
 		})
+	}
+}
+
+func TestAlertStringBecomesBody(t *testing.T) {
+	payload := NewPayload().Alert("hello").AlertTitle("title")
+	b, _ := json.Marshal(payload)
+	if got, want := string(b), `{"aps":{"alert":{"body":"hello","title":"title"}}}`; got != want {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestCustomAPSReplacesDictionary(t *testing.T) {
+	payload := NewPayload().Custom("aps", map[string]any{"x": 1}).Badge(1)
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `{"aps":{"x":1}}`; got != want {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestZeroValuePayload(t *testing.T) {
+	var payload Payload
+	payload.Badge(1).Custom("key", "val")
+	b, _ := json.Marshal(&payload)
+	if got, want := string(b), `{"aps":{"badge":1},"key":"val"}`; got != want {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestLiveActivityStart(t *testing.T) {
+	for _, useChannel := range []bool{false, true} {
+		payload := NewPayload().
+			AlertTitle("Game started").
+			ContentState(map[string]any{}).
+			Event(LiveActivityEventStart).
+			Timestamp(time.Unix(1685952000, 0)).
+			AttributesType("GameAttributes").
+			Attributes(map[string]any{"team": "A"})
+		input := `"input-push-token":1`
+		if useChannel {
+			payload.InputPushChannel("dHN0LXNyY2gtY2hubA==")
+			input = `"input-push-channel":"dHN0LXNyY2gtY2hubA=="`
+		} else {
+			payload.InputPushToken()
+		}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"aps":{"alert":{"title":"Game started"},"content-state":{},"event":"start","timestamp":1685952000,"attributes-type":"GameAttributes","attributes":{"team":"A"},` + input + `}}`
+		if got := string(b); got != want {
+			t.Errorf("got %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestFocusAndWidgetKeys(t *testing.T) {
+	payload := NewPayload().TargetContentID("window-1").FilterCriteria("work").ContentChanged()
+	b, _ := json.Marshal(payload)
+	if got, want := string(b), `{"aps":{"target-content-id":"window-1","filter-criteria":"work","content-changed":true}}`; got != want {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestLiveActivityRelevanceScore(t *testing.T) {
+	payload := NewPayload().RelevanceScore(100)
+	b, _ := json.Marshal(payload)
+	if got, want := string(b), `{"aps":{"relevance-score":100}}`; got != want {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestMdmRejectsOtherKeys(t *testing.T) {
+	for name, payload := range map[string]*Payload{
+		"aps field":  NewPayload().Mdm("magic").Badge(1),
+		"custom key": NewPayload().Mdm("magic").Custom("key", "val"),
+	} {
+		if _, err := json.Marshal(payload); err == nil {
+			t.Errorf("%s: MDM payload with other keys was accepted", name)
+		}
+	}
+}
+
+func TestLiveActivityAlert(t *testing.T) {
+	payload := NewPayload().
+		AlertTitleLocalized("%@ is knocked down!", "Power Panda").
+		AlertBodyLocalized("Use a potion to heal %@!", "Power Panda").
+		AlertSound("HeroDown.mp4")
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"aps":{"alert":{"body":{"loc-key":"Use a potion to heal %@!","loc-args":["Power Panda"]},"title":{"loc-key":"%@ is knocked down!","loc-args":["Power Panda"]},"sound":"HeroDown.mp4"}}}`
+	if got := string(b); got != want {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestCustomMdmKeyIsNotMDM(t *testing.T) {
+	payload := NewPayload().Alert("hi").Custom("mdm", "metadata")
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `{"aps":{"alert":"hi"},"mdm":"metadata"}`; got != want {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestPayloadByValue(t *testing.T) {
+	var payload Payload
+	payload.Alert("hi")
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `{"aps":{"alert":"hi"}}`; got != want {
+		t.Errorf("got %#v, want %#v", got, want)
 	}
 }

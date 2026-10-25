@@ -41,6 +41,7 @@ func run() error {
 		return fmt.Errorf("parse proxy URL: %w", err)
 	}
 	client := apns2.NewClient(certificate,
+		apns2.WithHost(apns2.HostProduction),
 		apns2.WithProxy(http.ProxyURL(proxyURL)),
 		apns2.WithIdleConnTimeout(60*time.Second),
 	)
@@ -49,6 +50,7 @@ func run() error {
 	notification := &apns2.Notification{}
 	notification.DeviceToken = *token
 	notification.Topic = *topic
+	notification.PushType = apns2.PushTypeAlert
 	notification.Payload = []byte(`{
 			"aps" : {
 				"alert" : "Hello!"

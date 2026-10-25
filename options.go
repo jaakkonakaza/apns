@@ -27,7 +27,6 @@ type clientConfig struct {
 
 func defaultClientConfig() clientConfig {
 	return clientConfig{
-		host:            HostDevelopment,
 		timeout:         60 * time.Second,
 		dialTimeout:     20 * time.Second,
 		readIdleTimeout: 15 * time.Second,
@@ -35,7 +34,9 @@ func defaultClientConfig() clientConfig {
 	}
 }
 
-// WithHost sets the APNs endpoint. The default is HostDevelopment.
+// WithHost sets the APNs endpoint, HostProduction or HostDevelopment. There is
+// no default: Push fails until a host is set, so a client can't silently send
+// to the wrong environment.
 func WithHost(host string) ClientOption {
 	return func(config *clientConfig) { config.host = host }
 }
@@ -53,8 +54,9 @@ func WithDialTimeout(timeout time.Duration) ClientOption {
 }
 
 // WithReadIdleTimeout sets how long an HTTP/2 connection waits without incoming
-// frames before sending a health-check ping. The default is 15 seconds.
-// Zero disables idle health checks.
+// frames before sending a health-check ping. The ping detects connections that
+// died silently, which would otherwise stall pushes until they time out. The
+// default is 15 seconds. Zero disables idle health checks.
 func WithReadIdleTimeout(timeout time.Duration) ClientOption {
 	return func(config *clientConfig) { config.readIdleTimeout = timeout }
 }

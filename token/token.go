@@ -16,11 +16,14 @@ import (
 )
 
 const (
-	// TokenTimeout is the period for which a token is valid.
-	// If the timestamp for token issue is not within the last hour, APNs
-	// rejects subsequent push messages. This is set to under an hour so that
-	// we generate a new token before the existing one expires.
+	// TokenTimeout is how long Bearer reuses a signed token before refreshing
+	// it. Apple requires refreshing no more than once every 20 minutes and no
+	// less than once every 60 minutes, and rejects tokens issued more than an
+	// hour ago. Bearer only refreshes expired tokens; there is no forced refresh.
 	TokenTimeout = 50 * time.Minute
+
+	// minRefresh is how often APNs allows a new token on one connection.
+	minRefresh = 20 * time.Minute
 )
 
 // Possible errors when parsing a .p8 file.
@@ -33,7 +36,8 @@ var (
 
 // Token represents an Apple Provider Authentication Token (JSON Web Token).
 // Set AuthKey, KeyID, and TeamID before sharing a token and do not change them
-// during use. Its methods are safe to call concurrently.
+// during use. Share one Token per signing identity. Its methods are safe to
+// call concurrently.
 type Token struct {
 	mu       sync.Mutex
 	AuthKey  *ecdsa.PrivateKey
@@ -41,9 +45,10 @@ type Token struct {
 	TeamID   string
 	issuedAt int64
 	bearer   string
+	restored bool
 }
 
-// AuthKeyFromFile loads a .p8 certificate from a local file and returns a
+// AuthKeyFromFile loads a .p8 signing key from a local file and returns a
 // *ecdsa.PrivateKey.
 func AuthKeyFromFile(filename string) (*ecdsa.PrivateKey, error) {
 	bytes, err := os.ReadFile(filename)
@@ -53,7 +58,7 @@ func AuthKeyFromFile(filename string) (*ecdsa.PrivateKey, error) {
 	return AuthKeyFromBytes(bytes)
 }
 
-// AuthKeyFromBytes loads a .p8 certificate from an in memory byte array and
+// AuthKeyFromBytes loads a .p8 signing key from an in memory byte array and
 // returns an *ecdsa.PrivateKey.
 func AuthKeyFromBytes(bytes []byte) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(bytes)
@@ -86,22 +91,56 @@ func (t *Token) Bearer() (string, error) {
 	return t.bearer, nil
 }
 
-// Expired checks whether the token has expired.
-func (t *Token) Expired() bool {
+// IssuedAt returns when the cached bearer was signed, or the zero time if
+// none has been signed or restored.
+func (t *Token) IssuedAt() time.Time {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.expiredLocked()
+	if t.bearer == "" {
+		return time.Time{}
+	}
+	return time.Unix(t.issuedAt, 0)
+}
+
+// Restore caches a bearer signed earlier for the same AuthKey, KeyID and
+// TeamID, so a short-lived process can reuse it instead of signing a new one.
+// APNs rejects provider token updates more often than every 20 minutes.
+// Bearer replaces the restored token once it expires. Restore does not verify
+// the bearer, and ignores an issue time in the future or older than
+// TokenTimeout.
+func (t *Token) Restore(bearer string, issuedAt time.Time) {
+	now := time.Now()
+	if issuedAt.After(now) || !now.Before(issuedAt.Add(TokenTimeout)) {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.bearer = bearer
+	t.issuedAt = issuedAt.Unix()
+	t.restored = true
+}
+
+// Invalidate drops bearer from the cache after APNs rejects it, so the next
+// Bearer call signs a new token. It does nothing if bearer is no longer
+// cached. It keeps a token this process signed less than 20 minutes ago:
+// signing again with the same key wouldn't help, and APNs rejects tokens
+// updated more often than every 20 minutes.
+func (t *Token) Invalidate(bearer string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if bearer == "" || bearer != t.bearer {
+		return
+	}
+	if !t.restored && time.Since(time.Unix(t.issuedAt, 0)) < minRefresh {
+		return
+	}
+	t.bearer = ""
+	t.issuedAt = 0
+	t.restored = false
 }
 
 func (t *Token) expiredLocked() bool {
 	return !time.Now().Before(time.Unix(t.issuedAt, 0).Add(TokenTimeout))
-}
-
-// Generate creates a new token.
-func (t *Token) Generate() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.generateLocked()
 }
 
 func (t *Token) generateLocked() error {
@@ -140,5 +179,6 @@ func (t *Token) generateLocked() error {
 	bearer := signingString + "." + encoding.EncodeToString(signature)
 	t.issuedAt = issuedAt
 	t.bearer = bearer
+	t.restored = false
 	return nil
 }

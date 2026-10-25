@@ -6,6 +6,8 @@ import (
 	"crypto/tls"
 	"sync"
 	"time"
+
+	"github.com/jaakkonakaza/apns2/token"
 )
 
 type pendingClient struct {
@@ -33,7 +35,8 @@ type ClientManager struct {
 	// MaxAge is the maximum age of clients in the manager. Upon retrieval, if
 	// a client has remained unused in the manager for this duration or longer,
 	// it is replaced using Factory, or evicted if Factory returns nil. Set zero
-	// to disable expiration.
+	// to disable expiration, the default: Apple recommends reusing connections
+	// for hours or days.
 	MaxAge time.Duration
 
 	// Factory is the function which constructs clients if not found in the
@@ -54,8 +57,9 @@ type ClientManager struct {
 //
 // Having multiple clients per certificate in the manager is not allowed.
 //
-// By default, MaxSize is 64, MaxAge is 10 minutes, and Factory always returns
-// a Client with the supplied constructor options. WithHTTPClient is unsupported
+// By default, MaxSize is 64, MaxAge is zero (no expiry), and Factory always returns
+// a Client with the supplied constructor options. Include WithHost, because
+// clients have no default host. WithHTTPClient is unsupported
 // and causes a panic. Use Factory to supply a separate HTTP client for each
 // certificate.
 func NewClientManager(options ...ClientOption) *ClientManager {
@@ -69,7 +73,6 @@ func NewClientManager(options ...ClientOption) *ClientManager {
 	}
 	manager := &ClientManager{
 		MaxSize: 64,
-		MaxAge:  10 * time.Minute,
 		Factory: func(certificate tls.Certificate) *Client { return NewClient(certificate, options...) },
 	}
 
@@ -169,6 +172,16 @@ func (m *ClientManager) Get(certificate tls.Certificate) (client *Client) {
 	}
 	completed = true
 	return call.client
+}
+
+// GetByToken gets a token-authenticated Client for t's signing identity, its
+// team ID, key ID and public key, so refreshed or copied tokens share a client.
+// Clients are also keyed by host, because a connection can't mix teams or
+// environments.
+//
+// Not implemented yet: it panics with ErrNotImplemented.
+func (m *ClientManager) GetByToken(t *token.Token) *Client {
+	panic(ErrNotImplemented)
 }
 
 // Len returns the current size of the ClientManager.

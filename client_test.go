@@ -31,17 +31,21 @@ func (c *mockTransport) CloseIdleConnections() {
 
 // Unit Tests
 
-func TestClientDefaultHost(t *testing.T) {
-	client := apns.NewClient(mockCert())
-	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestTokenDefaultHost(t *testing.T) {
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment))
-	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
+func TestPushRequiresHost(t *testing.T) {
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("push without a host was sent")
+		return nil, errors.New("unexpected request")
+	})
+	for name, client := range map[string]*apns.Client{
+		"certificate": apns.NewClient(mockCert(), apns.WithHTTPClient(&http.Client{Transport: transport})),
+		"token":       apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: transport})),
+	} {
+		if client.Host != "" {
+			t.Errorf("%s client host = %q, want no default", name, client.Host)
+		}
+		if _, err := client.Push(context.Background(), mockNotification()); err == nil {
+			t.Errorf("%s client pushed without a host", name)
+		}
 	}
 }
 
@@ -157,8 +161,9 @@ func TestURL(t *testing.T) {
 
 func TestDefaultHeaders(t *testing.T) {
 	n := mockNotification()
+	n.Topic = ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("Content-Type"), "application/json; charset=utf-8"; !reflect.DeepEqual(got, want) {
+		if got, want := r.Header.Get("Content-Type"), ""; !reflect.DeepEqual(got, want) {
 			t.Errorf("got %#v, want %#v", got, want)
 		}
 		if got, want := r.Header.Get("apns-id"), ""; !reflect.DeepEqual(got, want) {
@@ -234,7 +239,7 @@ func TestClientPush(t *testing.T) {
 
 func TestHeaders(t *testing.T) {
 	n := mockNotification()
-	n.ApnsID = "84DB694F-464F-49BD-960A-D6DB028335C9"
+	n.ApnsID = "84db694f-464f-49bd-960a-d6db028335c9"
 	n.CollapseID = "game1.start.identifier"
 	n.Topic = "com.testapp"
 	n.Priority = 10
@@ -265,7 +270,7 @@ func TestHeaders(t *testing.T) {
 
 func TestExpirationHeader(t *testing.T) {
 	n := mockNotification()
-	n.ApnsID = "84DB694F-464F-49BD-960A-D6DB028335C9"
+	n.ApnsID = "84db694f-464f-49bd-960a-d6db028335c9"
 	n.CollapseID = "game1.start.identifier"
 	n.Topic = "com.testapp"
 	n.Priority = 10
@@ -308,6 +313,10 @@ func TestPushTypeHeader(t *testing.T) {
 		{apns.PushTypeMDM, "mdm"},
 		{apns.PushTypeLiveActivity, "liveactivity"},
 		{apns.PushTypePushToTalk, "pushtotalk"},
+		{apns.PushTypeAccessory, "accessory"},
+		{apns.PushTypeControls, "controls"},
+		{apns.PushTypeWidgets, "widgets"},
+		{apns.PushTypeNowPlaying, "nowplaying"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			n := mockNotification()
@@ -325,6 +334,84 @@ func TestPushTypeHeader(t *testing.T) {
 	}
 }
 
+func TestPushRejectsInvalidNotifications(t *testing.T) {
+	for name, tc := range map[string]struct {
+		token  bool
+		modify func(*apns.Notification)
+	}{
+		"empty push type":         {modify: func(n *apns.Notification) { n.PushType = "" }},
+		"token client no topic":   {token: true, modify: func(n *apns.Notification) { n.Topic = "" }},
+		"collapse ID too long":    {modify: func(n *apns.Notification) { n.CollapseID = strings.Repeat("x", 65) }},
+		"apns-id without hyphens": {modify: func(n *apns.Notification) { n.ApnsID = "84db694f464f49bd960ad6db028335c9" }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := mockNotification()
+			tc.modify(n)
+			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				t.Error("invalid notification was sent")
+				return nil, errors.New("unexpected request")
+			})
+			client := apns.NewClient(mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+			if tc.token {
+				client = apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+			}
+			if _, err := client.Push(context.Background(), n); err == nil {
+				t.Fatal("invalid notification was accepted")
+			}
+		})
+	}
+}
+
+// The control for TestPushRejectsInvalidNotifications: the same clients send
+// a valid notification, including one with an uppercase apns-id.
+func TestPushSendsValidNotification(t *testing.T) {
+	for name, token := range map[string]bool{"certificate": false, "token": true} {
+		t.Run(name, func(t *testing.T) {
+			sent := false
+			transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				sent = true
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+			})
+			client := apns.NewClient(mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+			if token {
+				client = apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+			}
+			n := mockNotification()
+			n.ApnsID = "84DB694F-464F-49BD-960A-D6DB028335C9"
+			if res, err := client.Push(context.Background(), n); err != nil || !res.Sent() || !sent {
+				t.Fatalf("Push = %v, %v (sent %t), want a sent notification", res, err, sent)
+			}
+		})
+	}
+}
+
+func TestPushInvalidatesRejectedRestoredToken(t *testing.T) {
+	provider := mockToken()
+	provider.Restore("restored.bearer.value", time.Now().Add(-time.Minute))
+	var bearers []string
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		bearers = append(bearers, r.Header.Get("authorization"))
+		body := `{"reason":"InvalidProviderToken"}`
+		if len(bearers) > 1 {
+			body = ""
+		}
+		status := http.StatusForbidden
+		if len(bearers) > 1 {
+			status = http.StatusOK
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	client := apns.NewTokenClient(provider, apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+	for range 2 {
+		if _, err := client.Push(context.Background(), mockNotification()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(bearers) != 2 || bearers[0] != "bearer restored.bearer.value" || bearers[1] == bearers[0] {
+		t.Errorf("bearers = %q, want the rejected restored token replaced", bearers)
+	}
+}
+
 func TestAuthorizationHeader(t *testing.T) {
 	n := mockNotification()
 	token := mockToken()
@@ -333,7 +420,7 @@ func TestAuthorizationHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("Content-Type"), "application/json; charset=utf-8"; !reflect.DeepEqual(got, want) {
+		if got, want := r.Header.Get("Content-Type"), ""; !reflect.DeepEqual(got, want) {
 			t.Errorf("got %#v, want %#v", got, want)
 		}
 		if got, want := r.Header.Get("authorization"), "bearer "+bearer; !reflect.DeepEqual(got, want) {
@@ -371,7 +458,7 @@ func TestPayload(t *testing.T) {
 func TestBadPayload(t *testing.T) {
 	n := mockNotification()
 	n.Payload = func() {}
-	_, err := mockClient("").Push(context.Background(), n)
+	_, err := mockClient(apns.HostDevelopment).Push(context.Background(), n)
 	if got := err; got == nil {
 		t.Error("unexpected nil")
 	}
@@ -380,7 +467,7 @@ func TestBadPayload(t *testing.T) {
 func TestDuplicatePayloadKeysAreNotSent(t *testing.T) {
 	n := mockNotification()
 	n.Payload = `{"aps":{"alert":"one","alert":"two"}}`
-	client := apns.NewClient(mockCert(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := apns.NewClient(mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Error("payload with duplicate keys was sent")
 		return nil, errors.New("unexpected request")
 	})}))
@@ -669,7 +756,7 @@ func TestClientPreservesTransportErrorDuringCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	transportErr := errors.New("TLS handshake failed")
-	client := apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		cancel()
 		return nil, transportErr
 	})}))
@@ -685,7 +772,7 @@ func TestClientPreservesTransportErrorDuringCancellation(t *testing.T) {
 func TestClientPreservesDeadlineErrorWrapper(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	client := apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})}))
@@ -778,7 +865,7 @@ func TestDeviceTokenValidation(t *testing.T) {
 }
 
 func TestPushReturnsTokenSigningError(t *testing.T) {
-	client := apns.NewTokenClient(&token.Token{}, apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := apns.NewTokenClient(&token.Token{}, apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Error("push reached transport after token signing failed")
 		return nil, errors.New("unexpected request")
 	})}))

@@ -14,7 +14,8 @@ import (
 
 func main() {
 	certPath := flag.String("cert", "", "Path to .p12 certificate file (Required)")
-	count := flag.Int("count", 200, "Number of pushes to send")
+	// APNs answers TooManyRequests when one device token gets many pushes in a row.
+	count := flag.Int("count", 10, "Number of pushes to send to the device token")
 	token := flag.String("token", "", "Push token (Required)")
 	topic := flag.String("topic", "", "Topic (Required)")
 	flag.Parse()
@@ -42,6 +43,7 @@ func main() {
 		n := &apns2.Notification{
 			DeviceToken: *token,
 			Topic:       *topic,
+			PushType:    apns2.PushTypeAlert,
 			Payload:     payload.NewPayload().Alert(fmt.Sprintf("Hello! %v", i)),
 		}
 		notifications <- n

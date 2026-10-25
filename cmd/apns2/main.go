@@ -24,11 +24,12 @@ func main() {
 func run(args []string, input io.Reader, output, diagnostics io.Writer, options ...apns2.ClientOption) error {
 	flags := flag.NewFlagSet("apns2", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
-	var certificatePath, topic, mode string
+	var certificatePath, topic, mode, pushType string
 	var version bool
 	flags.StringVar(&certificatePath, "certificate-path", "", "Path to a combined PEM certificate (required).")
 	flags.StringVar(&topic, "topic", "", "APNs topic, typically the app bundle ID (required).")
 	flags.StringVar(&mode, "mode", "production", "APNs server: production or development.")
+	flags.StringVar(&pushType, "push-type", string(apns2.PushTypeAlert), "apns-push-type header; it must match the payload.")
 	flags.BoolVar(&version, "version", false, "Show application version.")
 	flags.Usage = func() {
 		_, _ = fmt.Fprintln(diagnostics, "Usage: apns2 --certificate-path=PATH --topic=TOPIC [flags]\nReads STDIN lines formatted as: <DeviceToken> <APNs Payload>")
@@ -71,7 +72,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 		if !ok || deviceToken == "" || payload == "" {
 			return fmt.Errorf("expected <DeviceToken> <APNs Payload>")
 		}
-		res, err := client.Push(context.Background(), &apns2.Notification{DeviceToken: deviceToken, Topic: topic, Payload: payload})
+		res, err := client.Push(context.Background(), &apns2.Notification{DeviceToken: deviceToken, Topic: topic, PushType: apns2.PushType(pushType), Payload: payload})
 		if err != nil {
 			return err
 		}

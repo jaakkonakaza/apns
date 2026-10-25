@@ -4,6 +4,9 @@ package payload
 
 import (
 	"encoding/json/v2"
+	"errors"
+	"maps"
+	"reflect"
 	"time"
 )
 
@@ -11,17 +14,21 @@ import (
 type InterruptionLevel string
 
 const (
-	// InterruptionLevelPassive is used to indicate that notification be delivered in a passive manner.
+	// InterruptionLevelPassive adds the notification to the notification list
+	// without lighting up the screen or playing a sound.
 	InterruptionLevelPassive InterruptionLevel = "passive"
 
-	// InterruptionLevelActive is used to indicate the importance and delivery timing of a notification.
+	// InterruptionLevelActive presents the notification immediately, lights up
+	// the screen, and can play a sound. It is the default.
 	InterruptionLevelActive InterruptionLevel = "active"
 
-	// InterruptionLevelTimeSensitive is used to indicate the importance and delivery timing of a notification.
+	// InterruptionLevelTimeSensitive presents the notification immediately,
+	// even during a Focus that would otherwise hold it.
 	InterruptionLevelTimeSensitive InterruptionLevel = "time-sensitive"
 
-	// InterruptionLevelCritical is used to indicate the importance and delivery timing of a notification.
-	// This interruption level requires an approved entitlement from Apple.
+	// InterruptionLevelCritical presents the notification immediately and
+	// bypasses the mute switch to play a sound. It requires an approved
+	// entitlement from Apple.
 	// See: https://developer.apple.com/documentation/usernotifications/unnotificationinterruptionlevel/
 	InterruptionLevelCritical InterruptionLevel = "critical"
 )
@@ -30,17 +37,29 @@ const (
 type LiveActivityEvent string
 
 const (
-	// LiveActivityEventUpdate is used to update an live activity.
+	// LiveActivityEventStart starts a Live Activity from a push-to-start token.
+	// Include attributes-type, attributes, content-state, timestamp, and an
+	// alert. The attributes and content state must match the app's
+	// ActivityAttributes types. Send updates and end events to the Live
+	// Activity's own push token, or to its broadcast channel when it was
+	// started with InputPushChannel. Now Playing remote media sessions also
+	// use the start, update and end events.
+	LiveActivityEventStart LiveActivityEvent = "start"
+
+	// LiveActivityEventUpdate updates a Live Activity or Now Playing session.
 	LiveActivityEventUpdate LiveActivityEvent = "update"
 
-	// LiveActivityEventEnd is used to end an live activity.
+	// LiveActivityEventEnd ends a Live Activity or Now Playing session. For a
+	// Live Activity, include the final content state.
 	LiveActivityEventEnd LiveActivityEvent = "end"
 )
 
 // Payload represents a notification which holds the content that will be
-// marshalled as JSON.
+// marshalled as JSON. The zero value is an empty payload ready to use.
 type Payload struct {
-	content map[string]any
+	dictionary aps
+	content    map[string]any
+	mdm        *string
 }
 
 type aps struct {
@@ -50,34 +69,41 @@ type aps struct {
 	ContentAvailable  int               `json:"content-available,omitzero"`
 	InterruptionLevel InterruptionLevel `json:"interruption-level,omitempty"`
 	MutableContent    int               `json:"mutable-content,omitzero"`
-	RelevanceScore    *float32          `json:"relevance-score,omitempty"`
+	RelevanceScore    *float64          `json:"relevance-score,omitempty"`
 	Sound             any               `json:"sound,omitempty"`
 	ThreadID          string            `json:"thread-id,omitempty"`
-	URLArgs           []string          `json:"url-args,omitempty"`
-	ContentState      map[string]any    `json:"content-state,omitempty"`
+	ContentState      map[string]any    `json:"content-state,omitzero"`
 	DismissalDate     *int64            `json:"dismissal-date,omitempty"`
 	StaleDate         *int64            `json:"stale-date,omitempty"`
 	Event             LiveActivityEvent `json:"event,omitempty"`
 	Timestamp         *int64            `json:"timestamp,omitempty"`
 	AttributesType    string            `json:"attributes-type,omitempty"`
-	Attributes        map[string]any    `json:"attributes,omitempty"`
+	Attributes        map[string]any    `json:"attributes,omitzero"`
+	TargetContentID   string            `json:"target-content-id,omitempty"`
+	FilterCriteria    string            `json:"filter-criteria,omitempty"`
+	ContentChanged    bool              `json:"content-changed,omitzero"`
+	InputPushToken    int               `json:"input-push-token,omitzero"`
+	InputPushChannel  string            `json:"input-push-channel,omitempty"`
 }
 
 type alert struct {
-	Action          string   `json:"action,omitempty"`
-	ActionLocKey    string   `json:"action-loc-key,omitempty"`
-	Body            string   `json:"body,omitempty"`
+	Body            any      `json:"body,omitempty"`
 	LaunchImage     string   `json:"launch-image,omitempty"`
 	LocArgs         []string `json:"loc-args,omitempty"`
 	LocKey          string   `json:"loc-key,omitempty"`
-	Title           string   `json:"title,omitempty"`
+	Title           any      `json:"title,omitempty"`
 	Subtitle        string   `json:"subtitle,omitempty"`
 	TitleLocArgs    []string `json:"title-loc-args,omitempty"`
 	TitleLocKey     string   `json:"title-loc-key,omitempty"`
 	SubtitleLocArgs []string `json:"subtitle-loc-args,omitempty"`
 	SubtitleLocKey  string   `json:"subtitle-loc-key,omitempty"`
-	SummaryArg      string   `json:"summary-arg,omitempty"`
-	SummaryArgCount int      `json:"summary-arg-count,omitzero"`
+	Sound           string   `json:"sound,omitempty"`
+}
+
+// localizedString is the dictionary form of a Live Activity alert title or body.
+type localizedString struct {
+	LocKey  string   `json:"loc-key"`
+	LocArgs []string `json:"loc-args,omitempty"`
 }
 
 type sound struct {
@@ -88,35 +114,40 @@ type sound struct {
 
 // NewPayload returns a new Payload struct
 func NewPayload() *Payload {
-	return &Payload{
-		map[string]any{
-			"aps": &aps{},
-		},
-	}
+	return &Payload{}
 }
 
 // Alert sets the aps alert on the payload.
-// This will display a notification alert message to the user.
+// This will display a notification alert message to the user. A string alert
+// becomes the alert body if an Alert* method later adds other alert fields.
+// Any other value, such as a dictionary, and the Alert* methods replace each
+// other.
 //
-//	{"aps":{"alert":alert}}`
+//	{"aps":{"alert":alert}}
 func (p *Payload) Alert(alert any) *Payload {
 	p.aps().Alert = alert
 	return p
 }
 
 // ContentState sets the aps content-state on the payload.
-// This will update content-state of live activity widget.
+// Its fields must match the Live Activity's ContentState type. An empty map
+// encodes an empty dictionary; nil removes the field. Include the final
+// content state when ending a Live Activity. ActivityKit decodes it with its
+// default JSON strategies, so encode dates the way Swift's default Date
+// decoding expects, as seconds since 2001-01-01, not as Go time.Time strings.
 //
-//	{"aps":{"content-state": {} }}`
+//	{"aps":{"content-state": {} }}
 func (p *Payload) ContentState(contentState map[string]any) *Payload {
 	p.aps().ContentState = contentState
 	return p
 }
 
-// DismissalDate sets the aps dismissal-date on the payload.
-// This will remove the live activity from the user's UI at the given timestamp.
+// DismissalDate sets the aps dismissal-date on an end event. A date in the
+// past removes the Live Activity from the Lock Screen immediately; otherwise
+// use a date within four hours. Without it, the ended activity stays for up to
+// four hours.
 //
-//	{"aps":{"dismissal-date": DismissalDate }}`
+//	{"aps":{"dismissal-date": DismissalDate }}
 //
 // A zero time removes the field. Values are encoded as Unix seconds.
 func (p *Payload) DismissalDate(dismissalDate time.Time) *Payload {
@@ -125,9 +156,9 @@ func (p *Payload) DismissalDate(dismissalDate time.Time) *Payload {
 }
 
 // StaleDate sets the aps stale-date on the payload.
-// This will mark this live activity update as outdated at the given timestamp.
+// This marks the Live Activity as outdated at the given time.
 //
-//	{"aps":{"stale-date": StaleDate }}`
+//	{"aps":{"stale-date": StaleDate }}
 //
 // A zero time removes the field. Values are encoded as Unix seconds.
 func (p *Payload) StaleDate(staleDate time.Time) *Payload {
@@ -136,9 +167,10 @@ func (p *Payload) StaleDate(staleDate time.Time) *Payload {
 }
 
 // Event sets the aps event type on the payload.
-// This can either be `LiveActivityEventUpdate` or `LiveActivityEventEnd`
+// Use LiveActivityEventStart, LiveActivityEventUpdate, or LiveActivityEventEnd.
+// The same event values are used for Now Playing remote media sessions.
 //
-//	{"aps":{"event": Event }}`
+//	{"aps":{"event": Event }}
 func (p *Payload) Event(event LiveActivityEvent) *Payload {
 	p.aps().Event = event
 	return p
@@ -147,7 +179,7 @@ func (p *Payload) Event(event LiveActivityEvent) *Payload {
 // Timestamp sets the aps timestamp on the payload.
 // It identifies when the Live Activity update was generated.
 //
-//	{"aps":{"timestamp": Timestamp }}`
+//	{"aps":{"timestamp": Timestamp }}
 //
 // A zero time removes the field. Values are encoded as Unix seconds.
 func (p *Payload) Timestamp(timestamp time.Time) *Payload {
@@ -156,18 +188,19 @@ func (p *Payload) Timestamp(timestamp time.Time) *Payload {
 }
 
 // AttributesType sets the aps attributes-type field on the payload.
-// This is used for push-to-start live activities
+// It names the ActivityAttributes type of a push-to-start Live Activity.
 //
-//	{"aps":{"attributes-type": attributesType }}`
+//	{"aps":{"attributes-type": attributesType }}
 func (p *Payload) AttributesType(attributesType string) *Payload {
 	p.aps().AttributesType = attributesType
 	return p
 }
 
 // Attributes sets the aps attributes field on the payload.
-// This is used for push-to-start live activities
+// This is used for push-to-start Live Activities and Now Playing remote media
+// sessions. An empty map encodes an empty dictionary; nil removes the field.
 //
-//	{"aps":{"attributes": attributes }}`
+//	{"aps":{"attributes": attributes }}
 func (p *Payload) Attributes(attributes map[string]any) *Payload {
 	p.aps().Attributes = attributes
 	return p
@@ -192,18 +225,20 @@ func (p *Payload) UnsetBadge() *Payload {
 	return p
 }
 
-// Sound sets the aps sound on the payload.
-// This will play a sound from the app bundle, or the default sound otherwise.
+// Sound sets the aps sound for a regular notification: the name of a sound
+// file in the app's main bundle or its Library/Sounds folder, or "default" for
+// the system sound. Use CriticalSound for critical alerts.
 //
-//	{"aps":{"sound":sound}}
-func (p *Payload) Sound(sound any) *Payload {
-	p.aps().Sound = sound
+//	{"aps":{"sound":name}}
+func (p *Payload) Sound(name string) *Payload {
+	p.aps().Sound = name
 	return p
 }
 
 // ContentAvailable sets the aps content-available on the payload to 1.
-// This will indicate to the app that there is new content available to download
-// and launch the app in the background.
+// This requests background runtime to download new content; delivery is not
+// guaranteed. For a silent background notification, omit alert, badge, and
+// sound, and use the background push type with priority 5.
 //
 //	{"aps":{"content-available":1}}
 func (p *Payload) ContentAvailable() *Payload {
@@ -212,8 +247,8 @@ func (p *Payload) ContentAvailable() *Payload {
 }
 
 // MutableContent sets the aps mutable-content on the payload to 1.
-// This will indicate to the to the system to call your Notification Service
-// extension to mutate or replace the notification's content.
+// This requests a notification service extension to modify the content.
+// Also include an alert dictionary with title, subtitle, or body information.
 //
 //	{"aps":{"mutable-content":1}}
 func (p *Payload) MutableContent() *Payload {
@@ -225,9 +260,13 @@ func (p *Payload) MutableContent() *Payload {
 
 // Custom sets a custom key and value on the payload.
 // This will add custom key/value data to the notification payload at root level.
+// Setting the key "aps" replaces the aps dictionary the other methods build.
 //
 //	{"aps":{}, key:value}
 func (p *Payload) Custom(key string, val any) *Payload {
+	if p.content == nil {
+		p.content = map[string]any{}
+	}
 	p.content[key] = val
 	return p
 }
@@ -235,8 +274,7 @@ func (p *Payload) Custom(key string, val any) *Payload {
 // Alert dictionary
 
 // AlertTitle sets the aps alert title on the payload.
-// This will display a short string describing the purpose of the notification.
-// Apple Watch & Safari display this string as part of the notification interface.
+// Apple Watch displays it in the short look notification interface.
 //
 //	{"aps":{"alert":{"title":title}}}
 func (p *Payload) AlertTitle(title string) *Payload {
@@ -246,8 +284,8 @@ func (p *Payload) AlertTitle(title string) *Payload {
 
 // AlertTitleLocKey sets the aps alert title localization key on the payload.
 // This is the key to a title string in the Localizable.strings file for the
-// current localization. See Localized Formatted Strings in Apple documentation
-// for more information.
+// current localization. See
+// https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
 //
 //	{"aps":{"alert":{"title-loc-key":key}}}
 func (p *Payload) AlertTitleLocKey(key string) *Payload {
@@ -257,8 +295,8 @@ func (p *Payload) AlertTitleLocKey(key string) *Payload {
 
 // AlertTitleLocArgs sets the aps alert title localization args on the payload.
 // These are the variable string values to appear in place of the format
-// specifiers in title-loc-key. See Localized Formatted Strings in Apple
-// documentation for more information.
+// specifiers in title-loc-key. See
+// https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
 //
 //	{"aps":{"alert":{"title-loc-args":args}}}
 func (p *Payload) AlertTitleLocArgs(args []string) *Payload {
@@ -267,8 +305,7 @@ func (p *Payload) AlertTitleLocArgs(args []string) *Payload {
 }
 
 // AlertSubtitle sets the aps alert subtitle on the payload.
-// This will display a short string describing the purpose of the notification.
-// Apple Watch & Safari display this string as part of the notification interface.
+// It adds information that explains the purpose of the notification.
 //
 //	{"aps":{"alert":{"subtitle":"subtitle"}}}
 func (p *Payload) AlertSubtitle(subtitle string) *Payload {
@@ -278,8 +315,8 @@ func (p *Payload) AlertSubtitle(subtitle string) *Payload {
 
 // AlertSubtitleLocKey sets the aps alert subtitle localization key on the payload.
 // This is the key to a subtitle string in the Localizable.strings file for the
-// current localization. See Localized Formatted Strings in Apple documentation
-// for more information.
+// current localization. See
+// https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
 //
 //	{"aps":{"alert":{"subtitle-loc-key":key}}}
 func (p *Payload) AlertSubtitleLocKey(key string) *Payload {
@@ -289,12 +326,39 @@ func (p *Payload) AlertSubtitleLocKey(key string) *Payload {
 
 // AlertSubtitleLocArgs sets the aps alert subtitle localization args on the payload.
 // These are the variable string values to appear in place of the format
-// specifiers in subtitle-loc-key. See Localized Formatted Strings in Apple
-// documentation for more information.
+// specifiers in subtitle-loc-key. See
+// https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
 //
-//	{"aps":{"alert":{"title-loc-args":args}}}
+//	{"aps":{"alert":{"subtitle-loc-args":args}}}
 func (p *Payload) AlertSubtitleLocArgs(args []string) *Payload {
 	p.aps().alert().SubtitleLocArgs = args
+	return p
+}
+
+// AlertTitleLocalized sets the alert title to a localized string dictionary,
+// the form Live Activity alerts use.
+//
+//	{"aps":{"alert":{"title":{"loc-key":key,"loc-args":args}}}}
+func (p *Payload) AlertTitleLocalized(key string, args ...string) *Payload {
+	p.aps().alert().Title = localizedString{LocKey: key, LocArgs: args}
+	return p
+}
+
+// AlertBodyLocalized sets the alert body to a localized string dictionary,
+// the form Live Activity alerts use.
+//
+//	{"aps":{"alert":{"body":{"loc-key":key,"loc-args":args}}}}
+func (p *Payload) AlertBodyLocalized(key string, args ...string) *Payload {
+	p.aps().alert().Body = localizedString{LocKey: key, LocArgs: args}
+	return p
+}
+
+// AlertSound sets the sound inside the alert dictionary, as Live Activity
+// alerts use. Regular notifications use Sound.
+//
+//	{"aps":{"alert":{"sound":name}}}
+func (p *Payload) AlertSound(name string) *Payload {
+	p.aps().alert().Sound = name
 	return p
 }
 
@@ -307,10 +371,9 @@ func (p *Payload) AlertBody(body string) *Payload {
 	return p
 }
 
-// AlertLaunchImage sets the aps launch image on the payload.
-// This is the filename of an image file in the app bundle. The image is used
-// as the launch image when users tap the action button or move the action
-// slider.
+// AlertLaunchImage sets the aps alert launch-image on the payload.
+// If the user launches the app from the notification, this image or
+// storyboard file is shown instead of the app's normal launch image.
 //
 //	{"aps":{"alert":{"launch-image":image}}}
 func (p *Payload) AlertLaunchImage(image string) *Payload {
@@ -320,8 +383,8 @@ func (p *Payload) AlertLaunchImage(image string) *Payload {
 
 // AlertLocArgs sets the aps alert localization args on the payload.
 // These are the variable string values to appear in place of the format
-// specifiers in loc-key. See Localized Formatted Strings in Apple
-// documentation for more information.
+// specifiers in loc-key. See
+// https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
 //
 //	{"aps":{"alert":{"loc-args":args}}}
 func (p *Payload) AlertLocArgs(args []string) *Payload {
@@ -331,8 +394,8 @@ func (p *Payload) AlertLocArgs(args []string) *Payload {
 
 // AlertLocKey sets the aps alert localization key on the payload.
 // This is the key to an alert-message string in the Localizable.strings file
-// for the current localization. See Localized Formatted Strings in Apple
-// documentation for more information.
+// for the current localization. See
+// https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
 //
 //	{"aps":{"alert":{"loc-key":key}}}
 func (p *Payload) AlertLocKey(key string) *Payload {
@@ -340,56 +403,11 @@ func (p *Payload) AlertLocKey(key string) *Payload {
 	return p
 }
 
-// AlertAction sets the aps alert action on the payload.
-// This is the label of the action button, if the user sets the notifications
-// to appear as alerts. This label should be succinct, such as “Details” or
-// “Read more”. If omitted, the default value is “Show”.
-//
-//	{"aps":{"alert":{"action":action}}}
-func (p *Payload) AlertAction(action string) *Payload {
-	p.aps().alert().Action = action
-	return p
-}
-
-// AlertActionLocKey sets the aps alert action localization key on the payload.
-// This is the the string used as a key to get a localized string in the current
-// localization to use for the notfication right button’s title instead of
-// “View”. See Localized Formatted Strings in Apple documentation for more
-// information.
-//
-//	{"aps":{"alert":{"action-loc-key":key}}}
-func (p *Payload) AlertActionLocKey(key string) *Payload {
-	p.aps().alert().ActionLocKey = key
-	return p
-}
-
-// AlertSummaryArg sets the aps alert summary arg key on the payload.
-// This is the string that is used as a key to fill in an argument
-// at the bottom of a notification to provide more context, such as
-// a name associated with the sender of the notification.
-//
-//	{"aps":{"alert":{"summary-arg":key}}}
-func (p *Payload) AlertSummaryArg(key string) *Payload {
-	p.aps().alert().SummaryArg = key
-	return p
-}
-
-// AlertSummaryArgCount sets the aps alert summary arg count key on the payload.
-// This integer sets a custom "weight" on the notification, effectively
-// allowing a notification to be viewed internally as two. For example if
-// a notification encompasses 3 messages, you can set it to 3.
-//
-//	{"aps":{"alert":{"summary-arg-count":key}}}
-func (p *Payload) AlertSummaryArgCount(key int) *Payload {
-	p.aps().alert().SummaryArgCount = key
-	return p
-}
-
 // General
 
 // Category sets the aps category on the payload.
-// This is a string value that represents the identifier property of the
-// UIMutableUserNotificationCategory object you created to define custom actions.
+// It must match the identifier of a UNNotificationCategory the app registers at
+// launch. See https://developer.apple.com/documentation/usernotifications/declaring-your-actionable-notification-types
 //
 //	{"aps":{"category":category}}
 func (p *Payload) Category(category string) *Payload {
@@ -398,20 +416,66 @@ func (p *Payload) Category(category string) *Payload {
 }
 
 // Mdm sets the mdm on the payload.
-// This is for Apple Mobile Device Management (mdm) payloads.
+// This is for Apple Mobile Device Management (mdm) payloads. Pass the PushMagic
+// string. An MDM payload is exactly {"mdm":...}: marshaling fails if other
+// keys or aps fields are set.
 //
-//	{"aps":{}:"mdm":mdm}
+//	{"mdm":mdm}
 func (p *Payload) Mdm(mdm string) *Payload {
-	p.content["mdm"] = mdm
+	p.mdm = &mdm
+	return p
+}
+
+// TargetContentID sets the aps target-content-id on the payload.
+// It identifies the window brought forward when the notification is opened.
+//
+//	{"aps":{"target-content-id":id}}
+func (p *Payload) TargetContentID(id string) *Payload {
+	p.aps().TargetContentID = id
+	return p
+}
+
+// FilterCriteria sets the aps filter-criteria on the payload.
+// The system evaluates it against the current Focus filter to decide whether
+// to display the notification.
+//
+//	{"aps":{"filter-criteria":criteria}}
+func (p *Payload) FilterCriteria(criteria string) *Payload {
+	p.aps().FilterCriteria = criteria
+	return p
+}
+
+// ContentChanged sets the aps content-changed on the payload to true.
+// Widget and control pushes use it to tell WidgetKit to reload their content.
+//
+//	{"aps":{"content-changed":true}}
+func (p *Payload) ContentChanged() *Payload {
+	p.aps().ContentChanged = true
+	return p
+}
+
+// InputPushToken sets the aps input-push-token on the payload to 1.
+// On a LiveActivityEventStart payload, it asks the started Live Activity for a
+// new push token. Requires iOS or iPadOS 18 or later.
+//
+//	{"aps":{"input-push-token":1}}
+func (p *Payload) InputPushToken() *Payload {
+	p.aps().InputPushToken = 1
+	return p
+}
+
+// InputPushChannel sets the aps input-push-channel on the payload.
+// On a LiveActivityEventStart payload, the started Live Activity subscribes to
+// the existing broadcast channel. Requires iOS or iPadOS 18 or later.
+//
+//	{"aps":{"input-push-channel":channelID}}
+func (p *Payload) InputPushChannel(channelID string) *Payload {
+	p.aps().InputPushChannel = channelID
 	return p
 }
 
 // ThreadID sets the aps thread id on the payload.
-// This is for the purpose of updating the contents of a View Controller in a
-// Notification Content app extension when a new notification arrives. If a
-// new notification arrives whose thread-id value matches the thread-id of the
-// notification already being displayed, the didReceiveNotification method
-// is called.
+// This app-specific identifier groups related notifications.
 //
 //	{"aps":{"thread-id":id}}
 func (p *Payload) ThreadID(threadID string) *Payload {
@@ -419,31 +483,8 @@ func (p *Payload) ThreadID(threadID string) *Payload {
 	return p
 }
 
-// URLArgs sets the aps category on the payload.
-// This specifies an array of values that are paired with the placeholders
-// inside the urlFormatString value of your website.json file.
-// See Apple Notification Programming Guide for Websites.
-//
-//	{"aps":{"url-args":urlArgs}}
-func (p *Payload) URLArgs(urlArgs []string) *Payload {
-	p.aps().URLArgs = urlArgs
-	return p
-}
-
-// SoundName sets the name in the aps sound dictionary.
-func (p *Payload) SoundName(name string) *Payload {
-	p.aps().sound().Name = name
-	return p
-}
-
-// SoundVolume sets the volume in the aps sound dictionary, preserving zero.
-// This does not enable critical delivery.
-func (p *Payload) SoundVolume(volume float32) *Payload {
-	p.aps().sound().Volume = &volume
-	return p
-}
-
-// CriticalSound sets a critical alert sound. Critical alerts require Apple's entitlement.
+// CriticalSound sets a critical alert sound with a volume from 0 to 1.
+// Critical alerts require Apple's entitlement.
 func (p *Payload) CriticalSound(name string, volume float32) *Payload {
 	p.aps().Sound = &sound{Critical: 1, Name: name, Volume: &volume}
 	return p
@@ -460,53 +501,58 @@ func (p *Payload) InterruptionLevel(interruptionLevel InterruptionLevel) *Payloa
 	return p
 }
 
-// The relevance score, a number between 0 and 1,
-// that the system uses to sort the notifications from your app.
-// The highest score gets featured in the notification summary.
-// See https://developer.apple.com/documentation/usernotifications/unnotificationcontent/3821031-relevancescore.
+// RelevanceScore sets the score the system uses to sort the notifications
+// from your app. The highest score gets featured in the notification summary.
+// Use a number between 0 and 1. Live Activity updates accept any relative
+// value, for example 25, 50, 75 or 100; the highest score also decides which
+// Live Activity appears in the Dynamic Island.
 //
 //	{"aps":{"relevance-score":0.1}}
-func (p *Payload) RelevanceScore(b float32) *Payload {
+func (p *Payload) RelevanceScore(b float64) *Payload {
 	p.aps().RelevanceScore = &b
 	return p
 }
 
-// Unsets the relevance score
-// that the system uses to sort the notifications from your app.
-// The highest score gets featured in the notification summary.
-// See https://developer.apple.com/documentation/usernotifications/unnotificationcontent/3821031-relevancescore.
+// UnsetRelevanceScore removes the relevance score from the payload.
+// See https://developer.apple.com/documentation/usernotifications/unnotificationcontent/relevancescore
 //
-//	{"aps":{"relevance-score":0.1}}
+//	{"aps":{}}
 func (p *Payload) UnsetRelevanceScore() *Payload {
 	p.aps().RelevanceScore = nil
 	return p
 }
 
-// MarshalJSON returns the JSON encoded version of the Payload
-func (p *Payload) MarshalJSON() ([]byte, error) {
-	return json.Marshal(p.content, json.Deterministic(true))
+// MarshalJSON returns the JSON encoded version of the Payload. It has a value
+// receiver, so a Payload passed by value encodes the same as a pointer.
+func (p Payload) MarshalJSON() ([]byte, error) {
+	if p.mdm != nil {
+		if len(p.content) > 0 || !reflect.ValueOf(p.dictionary).IsZero() {
+			return nil, errors.New("payload: an MDM payload can't contain other keys")
+		}
+		return json.Marshal(map[string]string{"mdm": *p.mdm})
+	}
+	content := make(map[string]any, len(p.content)+1)
+	maps.Copy(content, p.content)
+	if _, custom := content["aps"]; !custom {
+		content["aps"] = &p.dictionary
+	}
+	return json.Marshal(content, json.Deterministic(true))
 }
 
 func (p *Payload) aps() *aps {
-	return p.content["aps"].(*aps)
+	return &p.dictionary
 }
 
 func (a *aps) alert() *alert {
-	if _, ok := a.Alert.(*alert); !ok {
+	switch current := a.Alert.(type) {
+	case *alert:
+		return current
+	case string:
+		a.Alert = &alert{Body: current}
+	default:
 		a.Alert = &alert{}
 	}
 	return a.Alert.(*alert)
-}
-
-func (a *aps) sound() *sound {
-	if _, ok := a.Sound.(*sound); !ok {
-		name, ok := a.Sound.(string)
-		if !ok {
-			name = "default"
-		}
-		a.Sound = &sound{Name: name}
-	}
-	return a.Sound.(*sound)
 }
 
 func unixSeconds(t time.Time) *int64 {
