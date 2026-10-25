@@ -1,6 +1,6 @@
 module github.com/sideshow/apns2
 
-go 1.18
+go 1.27.3
 
 require (
 	github.com/alecthomas/kingpin v2.2.6+incompatible

@@ -8,7 +8,7 @@ APNS/2 is a go package designed for simple, flexible and fast Apple Push Notific
 
 - Uses new Apple APNs HTTP/2 connection
 - Fast - See [notes on speed](https://github.com/sideshow/apns2/wiki/APNS-HTTP-2-Push-Speed)
-- Works with go 1.7 and later
+- Requires Go 1.27.3 or later
 - Supports new Apple Token Based Authentication (JWT)
 - Supports new iOS 10 features such as Collapse IDs, Subtitles and Mutable Notifications
 - Supports new iOS 15 features interruptionLevel and relevanceScore
@@ -19,17 +19,17 @@ APNS/2 is a go package designed for simple, flexible and fast Apple Push Notific
 
 ## Install
 
-- Make sure you have [Go](https://golang.org/doc/install) installed and have set your [GOPATH](https://golang.org/doc/code.html#GOPATH).
-- Install apns2:
+- Make sure you have [Go 1.27.3 or later](https://go.dev/doc/install) installed.
+- Add apns2 to your Go module:
 
 ```sh
 go get -u github.com/sideshow/apns2
 ```
 
-If you are running the test suite you will also need to install testify:
+To run the test suite from this repository:
 
 ```sh
-go get -u github.com/stretchr/testify
+go test -race ./...
 ```
 
 ## Example
@@ -184,7 +184,7 @@ Speed is greatly affected by the location of your server and the quality of your
 
 ## Command line tool
 
-APNS/2 has a command line tool that can be installed with `go get github.com/sideshow/apns2/apns2`. Usage:
+APNS/2 has a command line tool that can be installed from this repository with `go install ./apns2`. Usage:
 
 ```
 apns2 --help
