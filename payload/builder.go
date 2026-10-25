@@ -3,7 +3,7 @@
 package payload
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"time"
 )
 
@@ -47,9 +47,9 @@ type aps struct {
 	Alert             any               `json:"alert,omitempty"`
 	Badge             *int              `json:"badge,omitempty"`
 	Category          string            `json:"category,omitempty"`
-	ContentAvailable  int               `json:"content-available,omitempty"`
+	ContentAvailable  int               `json:"content-available,omitzero"`
 	InterruptionLevel InterruptionLevel `json:"interruption-level,omitempty"`
-	MutableContent    int               `json:"mutable-content,omitempty"`
+	MutableContent    int               `json:"mutable-content,omitzero"`
 	RelevanceScore    *float32          `json:"relevance-score,omitempty"`
 	Sound             any               `json:"sound,omitempty"`
 	ThreadID          string            `json:"thread-id,omitempty"`
@@ -77,11 +77,11 @@ type alert struct {
 	SubtitleLocArgs []string `json:"subtitle-loc-args,omitempty"`
 	SubtitleLocKey  string   `json:"subtitle-loc-key,omitempty"`
 	SummaryArg      string   `json:"summary-arg,omitempty"`
-	SummaryArgCount int      `json:"summary-arg-count,omitempty"`
+	SummaryArgCount int      `json:"summary-arg-count,omitzero"`
 }
 
 type sound struct {
-	Critical int      `json:"critical,omitempty"`
+	Critical int      `json:"critical,omitzero"`
 	Name     string   `json:"name,omitempty"`
 	Volume   *float32 `json:"volume,omitempty"`
 }
@@ -484,7 +484,7 @@ func (p *Payload) UnsetRelevanceScore() *Payload {
 
 // MarshalJSON returns the JSON encoded version of the Payload
 func (p *Payload) MarshalJSON() ([]byte, error) {
-	return json.Marshal(p.content)
+	return json.Marshal(p.content, json.Deterministic(true))
 }
 
 func (p *Payload) aps() *aps {

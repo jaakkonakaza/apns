@@ -1,7 +1,7 @@
 package payload_test
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"reflect"
 	"testing"
 	"time"
@@ -90,6 +90,16 @@ func TestCustom(t *testing.T) {
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{},"key":"val"}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestCustomKeysAreSorted(t *testing.T) {
+	payload := NewPayload().Custom("zeta", 1).Custom("alpha", map[string]any{"b": 2, "a": 1})
+	for range 20 {
+		b, _ := json.Marshal(payload)
+		if got, want := string(b), `{"alpha":{"a":1,"b":2},"aps":{},"zeta":1}`; got != want {
+			t.Fatalf("got %#v, want %#v", got, want)
+		}
 	}
 }
 

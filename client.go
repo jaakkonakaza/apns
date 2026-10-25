@@ -7,7 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +87,9 @@ func newClient(tlsConfig *tls.Config, options ...ClientOption) *Client {
 	return &Client{httpClient: httpClient, Host: config.host}
 }
 
+// maxResponseBytes bounds how much of an APNs response body Push reads.
+const maxResponseBytes = 64 << 10
+
 func noRedirects(*http.Request, []*http.Request) error {
 	return errors.New("apns2: redirects are not supported")
 }
@@ -150,12 +153,21 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	r.ApnsID = response.Header.Get("apns-id")
 	r.ApnsUniqueID = response.Header.Get("apns-unique-id")
 
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return r, err
+	}
+	if len(data) > maxResponseBytes {
+		return r, fmt.Errorf("apns2: response body exceeds %d bytes", maxResponseBytes)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return r, nil
+	}
 	var body struct {
 		Reason    string `json:"reason"`
 		Timestamp *int64 `json:"timestamp"`
 	}
-	decoder := json.NewDecoder(response.Body)
-	if err := decoder.Decode(&body); err != nil && err != io.EOF {
+	if err := json.Unmarshal(data, &body); err != nil {
 		return r, err
 	}
 	r.Reason = body.Reason

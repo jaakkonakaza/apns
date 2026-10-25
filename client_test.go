@@ -377,6 +377,18 @@ func TestBadPayload(t *testing.T) {
 	}
 }
 
+func TestDuplicatePayloadKeysAreNotSent(t *testing.T) {
+	n := mockNotification()
+	n.Payload = `{"aps":{"alert":"one","alert":"two"}}`
+	client := apns.NewClient(mockCert(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("payload with duplicate keys was sent")
+		return nil, errors.New("unexpected request")
+	})}))
+	if _, err := client.Push(context.Background(), n); err == nil {
+		t.Fatal("accepted payload with duplicate keys")
+	}
+}
+
 func Test200SuccessResponse(t *testing.T) {
 	n := mockNotification()
 	apnsID := "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
@@ -487,6 +499,31 @@ func TestMalformedJSONResponse(t *testing.T) {
 	}
 	if got, want := res.StatusCode, http.StatusOK; got != want {
 		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestAmbiguousOrOversizedResponse(t *testing.T) {
+	for name, body := range map[string]string{
+		"duplicate names": `{"reason":"one","reason":"two"}`,
+		"trailing value":  `{} {}`,
+		"invalid UTF-8":   "{\"reason\":\"\xff\"}",
+		"oversized":       `{"reason":"` + strings.Repeat("x", 64<<10) + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("apns-id", "5D2EA1E7-61E4-4E18-8FD9-8B5D3A8F0A41")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+			res, err := mockClient(server.URL).Push(context.Background(), mockNotification())
+			if err == nil {
+				t.Fatal("accepted malformed response")
+			}
+			if res == nil || res.StatusCode != http.StatusBadRequest || res.ApnsID == "" {
+				t.Errorf("response metadata = %+v, want status and apns-id", res)
+			}
+		})
 	}
 }
 

@@ -1,7 +1,7 @@
 package apns2
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"time"
 )
 
@@ -149,7 +149,8 @@ type Notification struct {
 	PushType PushType
 }
 
-// MarshalJSON converts the notification payload to JSON.
+// MarshalJSON converts the notification payload to JSON. String and []byte
+// payloads are sent as is, after json.Marshal validates them.
 func (n *Notification) MarshalJSON() ([]byte, error) {
 	switch payload := n.Payload.(type) {
 	case string:
@@ -157,6 +158,6 @@ func (n *Notification) MarshalJSON() ([]byte, error) {
 	case []byte:
 		return payload, nil
 	default:
-		return json.Marshal(payload)
+		return json.Marshal(payload, json.Deterministic(true))
 	}
 }
