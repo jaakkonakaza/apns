@@ -3,6 +3,7 @@ GOVULNCHECK_VERSION := v1.1.4
 TOOLS_DIR := $(CURDIR)/.bin
 GOLANGCI_LINT := $(TOOLS_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-lint
 GOVULNCHECK := $(TOOLS_DIR)/govulncheck-$(GOVULNCHECK_VERSION)/govulncheck
+COVER_PACKAGES = $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./... | paste -sd, -)
 
 .PHONY: tools fmt fmt-check lint build test coverage vuln check
 
@@ -30,7 +31,7 @@ test:
 	go test -race ./...
 
 coverage:
-	go test -race -covermode=atomic -coverprofile=covprofile ./...
+	go test -race -covermode=atomic -coverpkg="$(COVER_PACKAGES)" -coverprofile=covprofile ./...
 
 vuln: $(GOVULNCHECK)
 	$(GOVULNCHECK) ./...
