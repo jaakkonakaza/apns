@@ -14,14 +14,12 @@ import (
 	"github.com/jaakkonakaza/apns2/token"
 )
 
-// Broadcast push and channel management endpoints. Broadcast pushes use the
-// regular APNs hosts, as Apple's connection section lists; the api-broadcast
-// names in its request examples resolve to the same servers.
+// Broadcast push and channel management endpoints.
 // See https://developer.apple.com/documentation/usernotifications/sending-broadcast-push-notification-requests-to-apns
 // and https://developer.apple.com/documentation/usernotifications/sending-channel-management-requests-to-apns
 const (
-	HostBroadcastDevelopment = HostDevelopment
-	HostBroadcastProduction  = HostProduction
+	HostBroadcastDevelopment = "https://api-broadcast.sandbox.push.apple.com"
+	HostBroadcastProduction  = "https://api-broadcast.push.apple.com"
 	HostChannelDevelopment   = "https://api-manage-broadcast.sandbox.push.apple.com:2195"
 	HostChannelProduction    = "https://api-manage-broadcast.push.apple.com:2196"
 )
