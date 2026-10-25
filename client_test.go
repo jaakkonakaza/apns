@@ -2,9 +2,6 @@ package apns2_test
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -14,35 +11,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	apns "github.com/jaakkonakaza/apns2"
 	"github.com/jaakkonakaza/apns2/token"
 )
-
-// Mocks
-
-func mockNotification() *apns.Notification {
-	n := &apns.Notification{}
-	n.DeviceToken = "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7"
-	n.Payload = []byte(`{"aps":{"alert":"Hello!"}}`)
-	return n
-}
-
-func mockToken() *token.Token {
-	pubkeyCurve := elliptic.P256()
-	authKey, _ := ecdsa.GenerateKey(pubkeyCurve, rand.Reader)
-	return &token.Token{AuthKey: authKey}
-}
-
-func mockCert() tls.Certificate {
-	return tls.Certificate{}
-}
-
-func mockClient(url string) *apns.Client {
-	return apns.NewClient(mockCert(), apns.WithHost(url), apns.WithHTTPClient(&http.Client{}))
-}
 
 type mockTransport struct {
 	*http.Transport
@@ -318,138 +294,34 @@ func TestExpirationHeader(t *testing.T) {
 	}
 }
 
-func TestPushTypeAlertHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeAlert
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "alert"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypeBackgroundHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeBackground
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "background"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypeLocationHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeLocation
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "location"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypeVOIPHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeVOIP
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "voip"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypeComplicationHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeComplication
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "complication"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypeFileProviderHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeFileProvider
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "fileprovider"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypeMDMHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeMDM
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "mdm"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypeLiveActivityHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypeLiveActivity
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "liveactivity"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestPushTypePushToTalkHeader(t *testing.T) {
-	n := mockNotification()
-	n.PushType = apns.PushTypePushToTalk
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-push-type"), "pushtotalk"; !reflect.DeepEqual(got, want) {
-			t.Errorf("got %#v, want %#v", got, want)
-		}
-	}))
-	defer server.Close()
-	_, err := mockClient(server.URL).Push(context.Background(), n)
-	if got := err; got != nil {
-		t.Errorf("got %v, want nil", got)
+func TestPushTypeHeader(t *testing.T) {
+	for _, tc := range []struct {
+		pushType apns.PushType
+		want     string
+	}{
+		{apns.PushTypeAlert, "alert"},
+		{apns.PushTypeBackground, "background"},
+		{apns.PushTypeLocation, "location"},
+		{apns.PushTypeVOIP, "voip"},
+		{apns.PushTypeComplication, "complication"},
+		{apns.PushTypeFileProvider, "fileprovider"},
+		{apns.PushTypeMDM, "mdm"},
+		{apns.PushTypeLiveActivity, "liveactivity"},
+		{apns.PushTypePushToTalk, "pushtotalk"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			n := mockNotification()
+			n.PushType = tc.pushType
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("apns-push-type"); got != tc.want {
+					t.Errorf("got %#v, want %#v", got, tc.want)
+				}
+			}))
+			defer server.Close()
+			if _, err := mockClient(server.URL).Push(context.Background(), n); err != nil {
+				t.Errorf("got %v, want nil", err)
+			}
+		})
 	}
 }
 
@@ -729,5 +601,179 @@ func TestConstructorRejectsPlaintext(t *testing.T) {
 		if _, err := client.Push(context.Background(), mockNotification()); err == nil {
 			t.Error("plaintext endpoint accepted")
 		}
+	}
+}
+
+func TestClientCustomHTTP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	for _, tokenAuth := range []bool{false, true} {
+		t.Run(map[bool]string{false: "certificate", true: "token"}[tokenAuth], func(t *testing.T) {
+			options := []apns.ClientOption{apns.WithHost(server.URL), apns.WithHTTPClient(server.Client())}
+			client := apns.NewClient(mockCert(), options...)
+			if tokenAuth {
+				client = apns.NewTokenClient(mockToken(), options...)
+			}
+			defer client.CloseIdleConnections()
+			response, err := client.Push(context.Background(), mockNotification())
+			if err != nil || response == nil || !response.Sent() {
+				t.Fatalf("custom HTTP push = %v, %v", response, err)
+			}
+		})
+	}
+}
+
+func TestClientPreservesTransportErrorDuringCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transportErr := errors.New("TLS handshake failed")
+	client := apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		cancel()
+		return nil, transportErr
+	})}))
+	_, err := client.Push(ctx, mockNotification())
+	if _, ok := errors.AsType[*url.Error](err); !ok {
+		t.Fatalf("error = %T %v, want *url.Error", err, err)
+	}
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("error = %v, want original transport failure", err)
+	}
+}
+
+func TestClientPreservesDeadlineErrorWrapper(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	client := apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}))
+	_, err := client.Push(ctx, mockNotification())
+	if _, ok := errors.AsType[*url.Error](err); !ok {
+		t.Fatalf("error = %T %v, want *url.Error", err, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestResponseMetadataSurvivesDecodeError(t *testing.T) {
+	for _, status := range []int{http.StatusGone, http.StatusServiceUnavailable} {
+		for _, body := range []string{"{", `{"timestamp":"invalid"}`} {
+			t.Run(fmt.Sprintf("status=%d/body=%s", status, body), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("apns-id", "request-id")
+					w.Header().Set("apns-unique-id", "unique-id")
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(body))
+				}))
+				defer server.Close()
+				response, err := mockClient(server.URL).Push(context.Background(), mockNotification())
+				if err == nil {
+					t.Fatal("malformed response returned no error")
+				}
+				if response == nil || response.StatusCode != status || response.ApnsID != "request-id" || response.ApnsUniqueID != "unique-id" {
+					t.Fatalf("response metadata lost: %+v", response)
+				}
+			})
+		}
+	}
+}
+
+func TestResponseBodyCannotReplaceHTTPMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("apns-id", "request-id")
+		w.Header().Set("apns-unique-id", "unique-id")
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte(`{"StatusCode":200,"ApnsID":"body-id","ApnsUniqueID":"body-unique-id","reason":"Unregistered","timestamp":1458114061260}`))
+	}))
+	defer server.Close()
+	response, err := mockClient(server.URL).Push(context.Background(), mockNotification())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusGone || response.ApnsID != "request-id" || response.ApnsUniqueID != "unique-id" {
+		t.Fatalf("body replaced metadata: %+v", response)
+	}
+	if response.Reason != "Unregistered" || response.Timestamp.UnixMilli() != 1458114061260 {
+		t.Fatalf("incorrect body fields: %+v", response)
+	}
+}
+
+func TestDeviceTokenValidation(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.RawQuery != "" || !strings.HasPrefix(r.URL.Path, "/3/device/") {
+			t.Errorf("unexpected URL %s", r.URL)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client := mockClient(server.URL)
+	for _, value := range []string{"", "a", "zz", "dead/beef", "dead?beef", "dead#beef", "de ad"} {
+		n := mockNotification()
+		n.DeviceToken = value
+		if _, err := client.Push(context.Background(), n); err == nil {
+			t.Errorf("accepted invalid device token %q", value)
+		}
+	}
+	if _, err := client.Push(context.Background(), nil); err == nil {
+		t.Error("accepted nil notification")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("invalid tokens caused %d requests", requests.Load())
+	}
+	for _, value := range []string{"00", "aAbB", strings.Repeat("ab", 40)} {
+		n := mockNotification()
+		n.DeviceToken = value
+		if _, err := client.Push(context.Background(), n); err != nil {
+			t.Errorf("rejected hexadecimal token %q: %v", value, err)
+		}
+	}
+	if requests.Load() != 3 {
+		t.Errorf("valid tokens caused %d requests, want 3", requests.Load())
+	}
+}
+
+func TestPushReturnsTokenSigningError(t *testing.T) {
+	client := apns.NewTokenClient(&token.Token{}, apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("push reached transport after token signing failed")
+		return nil, errors.New("unexpected request")
+	})}))
+	if _, err := client.Push(context.Background(), mockNotification()); !errors.Is(err, token.ErrAuthKeyNil) {
+		t.Fatalf("push error = %v, want ErrAuthKeyNil", err)
+	}
+}
+
+func TestZeroExpirationOmitsHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, present := r.Header["Apns-Expiration"]; present {
+			t.Error("zero expiration sent an expiration header")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if _, err := mockClient(server.URL).Push(context.Background(), mockNotification()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPreEpochExpirationSendsZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("apns-expiration"); got != "0" {
+			t.Errorf("expiration = %q, want 0", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	n := mockNotification()
+	n.Expiration = time.Unix(-1, 0)
+	if _, err := mockClient(server.URL).Push(context.Background(), n); err != nil {
+		t.Fatal(err)
 	}
 }
