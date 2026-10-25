@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// EPushType defines the value for the apns-push-type header
-type EPushType string
+// PushType defines the value for the apns-push-type header
+type PushType string
 
 const (
 	// PushTypeAlert is used for notifications that trigger a user interaction —
@@ -15,7 +15,7 @@ const (
 	// notification requires immediate action from the user, set notification
 	// priority to 10; otherwise use 5. The alert push type is required on
 	// watchOS 6 and later. It is recommended on macOS, iOS, tvOS, and iPadOS.
-	PushTypeAlert EPushType = "alert"
+	PushTypeAlert PushType = "alert"
 
 	// PushTypeBackground is used for notifications that deliver content in the
 	// background, and don’t trigger any user interactions. If you set this push
@@ -23,7 +23,7 @@ const (
 	// use priority 5. Using priority 10 is an error. The background push type
 	// is required on watchOS 6 and later. It is recommended on macOS, iOS,
 	// tvOS, and iPadOS.
-	PushTypeBackground EPushType = "background"
+	PushTypeBackground PushType = "background"
 
 	// PushTypeLocation is used for notifications that request a user’s
 	// location. If you set this push type, the topic field must use your app’s
@@ -33,7 +33,7 @@ const (
 	// from the Location Push Service Extension, set notification apns-priority
 	// to 10; otherwise, use 5. The location push type supports only token-based
 	// authentication.
-	PushTypeLocation EPushType = "location"
+	PushTypeLocation PushType = "location"
 
 	// PushTypeVOIP is used for notifications that provide information about an
 	// incoming Voice-over-IP (VoIP) call. If you set this push type, the topic
@@ -41,7 +41,7 @@ const (
 	// you’re using certificate-based authentication, you must also register the
 	// certificate for VoIP services. The voip push type is not available on
 	// watchOS. It is recommended on macOS, iOS, tvOS, and iPadOS.
-	PushTypeVOIP EPushType = "voip"
+	PushTypeVOIP PushType = "voip"
 
 	// PushTypeComplication is used for notifications that contain update
 	// information for a watchOS app’s complications. If you set this push type,
@@ -50,19 +50,19 @@ const (
 	// also register the certificate for WatchKit services. The complication
 	// push type is recommended for watchOS and iOS. It is not available on
 	// macOS, tvOS, and iPadOS.
-	PushTypeComplication EPushType = "complication"
+	PushTypeComplication PushType = "complication"
 
 	// PushTypeFileProvider is used to signal changes to a File Provider
 	// extension. If you set this push type, the topic field must use your app’s
 	// bundle ID with .pushkit.fileprovider appended to the end. The
 	// fileprovider push type is not available on watchOS. It is recommended on
 	// macOS, iOS, tvOS, and iPadOS.
-	PushTypeFileProvider EPushType = "fileprovider"
+	PushTypeFileProvider PushType = "fileprovider"
 
 	// PushTypeMDM is used for notifications that tell managed devices to
 	// contact the MDM server. If you set this push type, you must use the topic
 	// from the UID attribute in the subject of your MDM push certificate.
-	PushTypeMDM EPushType = "mdm"
+	PushTypeMDM PushType = "mdm"
 
 	// PushTypeLiveActivity is used for Live Activities that display various
 	// real-time information. If you set this push type, the topic field must
@@ -70,13 +70,13 @@ const (
 	// The live activity push supports only token-based authentication. This
 	// push type is recommended for iOS. It is not available on macOS, tvOS,
 	// watchOS and iPadOS.
-	PushTypeLiveActivity EPushType = "liveactivity"
+	PushTypeLiveActivity PushType = "liveactivity"
 
 	// PushTypePushToTalk is used for notifications that provide information about the
 	// push to talk. If you set this push type, the apns-topic header field
 	// must use your app’s bundle ID with.voip-ptt appended to the end.
 	// The pushtotalk push type isn’t available on watchOS, macOS, and tvOS. It’s recommended on iOS and iPadOS.
-	PushTypePushToTalk EPushType = "pushtotalk"
+	PushTypePushToTalk PushType = "pushtotalk"
 )
 
 const (
@@ -146,7 +146,7 @@ type Notification struct {
 	// The pushtype of the push notification. If this values is left as the
 	// default an apns-push-type header with value 'alert' will be added to the
 	// http request.
-	PushType EPushType
+	PushType PushType
 }
 
 // MarshalJSON converts the notification payload to JSON.

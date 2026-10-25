@@ -53,7 +53,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 	if mode != "production" && mode != "development" {
 		return fmt.Errorf("mode must be production or development")
 	}
-	cert, err := certificate.FromPemFile(certificatePath, "")
+	cert, err := certificate.FromPemFile(certificatePath)
 	if err != nil {
 		return fmt.Errorf("load certificate %q: %w", certificatePath, err)
 	}

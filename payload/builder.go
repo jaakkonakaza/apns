@@ -2,36 +2,39 @@
 // builder to make constructing notification payloads easier.
 package payload
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // InterruptionLevel defines the value for the payload aps interruption-level
-type EInterruptionLevel string
+type InterruptionLevel string
 
 const (
 	// InterruptionLevelPassive is used to indicate that notification be delivered in a passive manner.
-	InterruptionLevelPassive EInterruptionLevel = "passive"
+	InterruptionLevelPassive InterruptionLevel = "passive"
 
 	// InterruptionLevelActive is used to indicate the importance and delivery timing of a notification.
-	InterruptionLevelActive EInterruptionLevel = "active"
+	InterruptionLevelActive InterruptionLevel = "active"
 
 	// InterruptionLevelTimeSensitive is used to indicate the importance and delivery timing of a notification.
-	InterruptionLevelTimeSensitive EInterruptionLevel = "time-sensitive"
+	InterruptionLevelTimeSensitive InterruptionLevel = "time-sensitive"
 
 	// InterruptionLevelCritical is used to indicate the importance and delivery timing of a notification.
 	// This interruption level requires an approved entitlement from Apple.
 	// See: https://developer.apple.com/documentation/usernotifications/unnotificationinterruptionlevel/
-	InterruptionLevelCritical EInterruptionLevel = "critical"
+	InterruptionLevelCritical InterruptionLevel = "critical"
 )
 
 // LiveActivityEvent defines the value for the payload aps event
-type ELiveActivityEvent string
+type LiveActivityEvent string
 
 const (
 	// LiveActivityEventUpdate is used to update an live activity.
-	LiveActivityEventUpdate ELiveActivityEvent = "update"
+	LiveActivityEventUpdate LiveActivityEvent = "update"
 
 	// LiveActivityEventEnd is used to end an live activity.
-	LiveActivityEventEnd ELiveActivityEvent = "end"
+	LiveActivityEventEnd LiveActivityEvent = "end"
 )
 
 // Payload represents a notification which holds the content that will be
@@ -41,23 +44,23 @@ type Payload struct {
 }
 
 type aps struct {
-	Alert             any                `json:"alert,omitempty"`
-	Badge             any                `json:"badge,omitempty"`
-	Category          string             `json:"category,omitempty"`
-	ContentAvailable  int                `json:"content-available,omitempty"`
-	InterruptionLevel EInterruptionLevel `json:"interruption-level,omitempty"`
-	MutableContent    int                `json:"mutable-content,omitempty"`
-	RelevanceScore    any                `json:"relevance-score,omitempty"`
-	Sound             any                `json:"sound,omitempty"`
-	ThreadID          string             `json:"thread-id,omitempty"`
-	URLArgs           []string           `json:"url-args,omitempty"`
-	ContentState      map[string]any     `json:"content-state,omitempty"`
-	DismissalDate     int64              `json:"dismissal-date,omitempty"`
-	StaleDate         int64              `json:"stale-date,omitempty"`
-	Event             ELiveActivityEvent `json:"event,omitempty"`
-	Timestamp         int64              `json:"timestamp,omitempty"`
-	AttributesType    string             `json:"attributes-type,omitempty"`
-	Attributes        map[string]any     `json:"attributes,omitempty"`
+	Alert             any               `json:"alert,omitempty"`
+	Badge             *int              `json:"badge,omitempty"`
+	Category          string            `json:"category,omitempty"`
+	ContentAvailable  int               `json:"content-available,omitempty"`
+	InterruptionLevel InterruptionLevel `json:"interruption-level,omitempty"`
+	MutableContent    int               `json:"mutable-content,omitempty"`
+	RelevanceScore    *float32          `json:"relevance-score,omitempty"`
+	Sound             any               `json:"sound,omitempty"`
+	ThreadID          string            `json:"thread-id,omitempty"`
+	URLArgs           []string          `json:"url-args,omitempty"`
+	ContentState      map[string]any    `json:"content-state,omitempty"`
+	DismissalDate     *int64            `json:"dismissal-date,omitempty"`
+	StaleDate         *int64            `json:"stale-date,omitempty"`
+	Event             LiveActivityEvent `json:"event,omitempty"`
+	Timestamp         *int64            `json:"timestamp,omitempty"`
+	AttributesType    string            `json:"attributes-type,omitempty"`
+	Attributes        map[string]any    `json:"attributes,omitempty"`
 }
 
 type alert struct {
@@ -101,65 +104,71 @@ func (p *Payload) Alert(alert any) *Payload {
 	return p
 }
 
-// SetContentState sets the aps content-state on the payload.
+// ContentState sets the aps content-state on the payload.
 // This will update content-state of live activity widget.
 //
 //	{"aps":{"content-state": {} }}`
-func (p *Payload) SetContentState(contentState map[string]any) *Payload {
+func (p *Payload) ContentState(contentState map[string]any) *Payload {
 	p.aps().ContentState = contentState
 	return p
 }
 
-// SetDismissalDate sets the aps dismissal-date on the payload.
+// DismissalDate sets the aps dismissal-date on the payload.
 // This will remove the live activity from the user's UI at the given timestamp.
 //
 //	{"aps":{"dismissal-date": DismissalDate }}`
-func (p *Payload) SetDismissalDate(dismissalDate int64) *Payload {
-	p.aps().DismissalDate = dismissalDate
+//
+// A zero time removes the field. Values are encoded as Unix seconds.
+func (p *Payload) DismissalDate(dismissalDate time.Time) *Payload {
+	p.aps().DismissalDate = unixSeconds(dismissalDate)
 	return p
 }
 
-// SetStaleDate sets the aps stale-date on the payload.
+// StaleDate sets the aps stale-date on the payload.
 // This will mark this live activity update as outdated at the given timestamp.
 //
 //	{"aps":{"stale-date": StaleDate }}`
-func (p *Payload) SetStaleDate(staleDate int64) *Payload {
-	p.aps().StaleDate = staleDate
+//
+// A zero time removes the field. Values are encoded as Unix seconds.
+func (p *Payload) StaleDate(staleDate time.Time) *Payload {
+	p.aps().StaleDate = unixSeconds(staleDate)
 	return p
 }
 
-// SetEvent sets the aps event type on the payload.
+// Event sets the aps event type on the payload.
 // This can either be `LiveActivityEventUpdate` or `LiveActivityEventEnd`
 //
 //	{"aps":{"event": Event }}`
-func (p *Payload) SetEvent(event ELiveActivityEvent) *Payload {
+func (p *Payload) Event(event LiveActivityEvent) *Payload {
 	p.aps().Event = event
 	return p
 }
 
-// SetTimestamp sets the aps timestamp on the payload.
-// This will let live activity know when to update the stuff.
+// Timestamp sets the aps timestamp on the payload.
+// It identifies when the Live Activity update was generated.
 //
 //	{"aps":{"timestamp": Timestamp }}`
-func (p *Payload) SetTimestamp(timestamp int64) *Payload {
-	p.aps().Timestamp = timestamp
+//
+// A zero time removes the field. Values are encoded as Unix seconds.
+func (p *Payload) Timestamp(timestamp time.Time) *Payload {
+	p.aps().Timestamp = unixSeconds(timestamp)
 	return p
 }
 
-// SetAttributesType sets the aps attributes-type field on the payload.
+// AttributesType sets the aps attributes-type field on the payload.
 // This is used for push-to-start live activities
 //
 //	{"aps":{"attributes-type": attributesType }}`
-func (p *Payload) SetAttributesType(attributesType string) *Payload {
+func (p *Payload) AttributesType(attributesType string) *Payload {
 	p.aps().AttributesType = attributesType
 	return p
 }
 
-// SetAttributes sets the aps attributes field on the payload.
+// Attributes sets the aps attributes field on the payload.
 // This is used for push-to-start live activities
 //
 //	{"aps":{"attributes": attributes }}`
-func (p *Payload) SetAttributes(attributes map[string]any) *Payload {
+func (p *Payload) Attributes(attributes map[string]any) *Payload {
 	p.aps().Attributes = attributes
 	return p
 }
@@ -169,22 +178,13 @@ func (p *Payload) SetAttributes(attributes map[string]any) *Payload {
 //
 //	{"aps":{"badge":b}}
 func (p *Payload) Badge(b int) *Payload {
-	p.aps().Badge = b
-	return p
-}
-
-// ZeroBadge sets the aps badge on the payload to 0.
-// This will clear the badge on the app icon.
-//
-//	{"aps":{"badge":0}}
-func (p *Payload) ZeroBadge() *Payload {
-	p.aps().Badge = 0
+	p.aps().Badge = &b
 	return p
 }
 
 // UnsetBadge removes the badge attribute from the payload.
 // This will leave the badge on the app icon unchanged.
-// If you wish to clear the app icon badge, use ZeroBadge() instead.
+// If you wish to clear the app icon badge, use Badge(0).
 //
 //	{"aps":{}}
 func (p *Payload) UnsetBadge() *Payload {
@@ -455,7 +455,7 @@ func (p *Payload) CriticalSound(name string, volume float32) *Payload {
 // See: https://developer.apple.com/documentation/usernotifications/unnotificationinterruptionlevel/
 //
 // {"aps":{"interruption-level":passive}}
-func (p *Payload) InterruptionLevel(interruptionLevel EInterruptionLevel) *Payload {
+func (p *Payload) InterruptionLevel(interruptionLevel InterruptionLevel) *Payload {
 	p.aps().InterruptionLevel = interruptionLevel
 	return p
 }
@@ -467,7 +467,7 @@ func (p *Payload) InterruptionLevel(interruptionLevel EInterruptionLevel) *Paylo
 //
 //	{"aps":{"relevance-score":0.1}}
 func (p *Payload) RelevanceScore(b float32) *Payload {
-	p.aps().RelevanceScore = b
+	p.aps().RelevanceScore = &b
 	return p
 }
 
@@ -507,4 +507,12 @@ func (a *aps) sound() *sound {
 		a.Sound = &sound{Name: name}
 	}
 	return a.Sound.(*sound)
+}
+
+func unixSeconds(t time.Time) *int64 {
+	if t.IsZero() {
+		return nil
+	}
+	seconds := t.Unix()
+	return &seconds
 }

@@ -84,6 +84,9 @@ func main() {
 }
 ```
 
+For a combined PEM certificate and private key, use
+`certificate.FromPemFile("certificate.pem")`. Encrypted PEM keys are unsupported.
+
 ## JWT Token Example
 
 Instead of using a `.p12` or `.pem` certificate as above, you can optionally use
@@ -145,6 +148,16 @@ notification.Payload = payload
 client.Push(context.Background(), notification)
 ```
 
+Live Activity payloads use the same builder:
+
+```go
+payload := payload.NewPayload().
+  Event(payload.LiveActivityEventUpdate).
+  ContentState(map[string]any{"progress": 0.5}).
+  Timestamp(time.Now()).
+  StaleDate(time.Now().Add(5*time.Minute))
+```
+
 Refer to the [payload](https://godoc.org/github.com/sideshow/apns2/payload) docs for more info.
 
 ## Response, Error handling
@@ -182,10 +195,6 @@ client := apns2.NewTokenClient(authToken,
   apns2.WithReadIdleTimeout(15*time.Second),
 )
 ```
-
-Other options cover proxies, TLS settings, custom dialing and custom HTTP
-clients. See the [package docs](https://godoc.org/github.com/sideshow/apns2) for
-details. `NewClientManager` accepts the same options.
 
 Every push takes a context for cancellation and individual request deadlines:
 

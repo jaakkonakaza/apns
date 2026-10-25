@@ -17,10 +17,10 @@ import (
 
 // Possible errors when parsing a certificate.
 var (
-	ErrFailedToParsePrivateKey  = errors.New("failed to parse private key")
-	ErrFailedToParseCertificate = errors.New("failed to parse certificate PEM data")
-	ErrNoPrivateKey             = errors.New("no private key")
-	ErrNoCertificate            = errors.New("no certificate")
+	ErrFailedToParsePrivateKey  = errors.New("certificate: failed to parse private key")
+	ErrFailedToParseCertificate = errors.New("certificate: failed to parse certificate PEM data")
+	ErrNoPrivateKey             = errors.New("certificate: no private key")
+	ErrNoCertificate            = errors.New("certificate: no certificate")
 )
 
 // FromP12File loads a PKCS#12 certificate from a local file and returns a
@@ -76,20 +76,19 @@ func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
 }
 
 // FromPemFile loads a certificate chain and matching private key from a combined
-// PEM file. Password-protected PEM keys are unsupported, the password argument
-// is ignored.
-func FromPemFile(filename string, password string) (tls.Certificate, error) {
+// PEM file. Password-protected PEM keys are unsupported.
+func FromPemFile(filename string) (tls.Certificate, error) {
 	bytes, err := os.ReadFile(filename)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	return FromPemBytes(bytes, password)
+	return FromPemBytes(bytes)
 }
 
 // FromPemBytes loads a certificate chain and matching private key from combined
 // PEM data. It supports PKCS#1, PKCS#8, and SEC1 private keys.
-// Password-protected PEM keys are unsupported, the password argument is ignored.
-func FromPemBytes(bytes []byte, password string) (tls.Certificate, error) {
+// Password-protected PEM keys are unsupported.
+func FromPemBytes(bytes []byte) (tls.Certificate, error) {
 	// Validate the same blocks tls.X509KeyPair uses: the first certificate is
 	// the leaf and the first private key must match it.
 	var leaf, key *pem.Block

@@ -33,8 +33,8 @@ func TestBadge(t *testing.T) {
 	}
 }
 
-func TestZeroBadge(t *testing.T) {
-	payload := NewPayload().ZeroBadge()
+func TestBadgeZero(t *testing.T) {
+	payload := NewPayload().Badge(0)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"badge":0}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -208,7 +208,7 @@ func TestCategory(t *testing.T) {
 }
 
 func TestContentState(t *testing.T) {
-	payload := NewPayload().SetContentState(map[string]any{"my_int": 13, "my_string": "foo"})
+	payload := NewPayload().ContentState(map[string]any{"my_int": 13, "my_string": "foo"})
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"content-state":{"my_int":13,"my_string":"foo"}}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -216,8 +216,8 @@ func TestContentState(t *testing.T) {
 }
 
 func TestDismissalDate(t *testing.T) {
-	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC).Unix()
-	payload := NewPayload().SetDismissalDate(timestamp)
+	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC)
+	payload := NewPayload().DismissalDate(timestamp)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"dismissal-date":1674821640}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -225,8 +225,8 @@ func TestDismissalDate(t *testing.T) {
 }
 
 func TestStaleDate(t *testing.T) {
-	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC).Unix()
-	payload := NewPayload().SetStaleDate(timestamp)
+	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC)
+	payload := NewPayload().StaleDate(timestamp)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"stale-date":1674821640}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -234,7 +234,7 @@ func TestStaleDate(t *testing.T) {
 }
 
 func TestEventEnd(t *testing.T) {
-	payload := NewPayload().SetEvent(LiveActivityEventEnd)
+	payload := NewPayload().Event(LiveActivityEventEnd)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"event":"end"}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -242,7 +242,7 @@ func TestEventEnd(t *testing.T) {
 }
 
 func TestEventUpdate(t *testing.T) {
-	payload := NewPayload().SetEvent(LiveActivityEventUpdate)
+	payload := NewPayload().Event(LiveActivityEventUpdate)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"event":"update"}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -250,8 +250,8 @@ func TestEventUpdate(t *testing.T) {
 }
 
 func TestTimestamp(t *testing.T) {
-	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC).Unix()
-	payload := NewPayload().SetTimestamp(timestamp)
+	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC)
+	payload := NewPayload().Timestamp(timestamp)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"timestamp":1674821640}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -260,7 +260,7 @@ func TestTimestamp(t *testing.T) {
 
 func TestAttributesType(t *testing.T) {
 	attributesType := "AdventureAttributes"
-	payload := NewPayload().SetAttributesType(attributesType)
+	payload := NewPayload().AttributesType(attributesType)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"attributes-type":"AdventureAttributes"}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -272,7 +272,7 @@ func TestAttributes(t *testing.T) {
 		"currentHealthLevel": 100,
 		"eventDescription":   "Adventure has begun!",
 	}
-	payload := NewPayload().SetAttributes(attributes)
+	payload := NewPayload().Attributes(attributes)
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"aps":{"attributes":{"currentHealthLevel":100,"eventDescription":"Adventure has begun!"}}}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -419,6 +419,35 @@ func TestSoundDeliveryIsExplicit(t *testing.T) {
 			}
 			if string(b) != test.want {
 				t.Errorf("payload = %s, want %s", b, test.want)
+			}
+		})
+	}
+}
+
+func TestLiveActivityDatePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*Payload, time.Time) *Payload
+	}{
+		{"dismissal-date", (*Payload).DismissalDate},
+		{"stale-date", (*Payload).StaleDate},
+		{"timestamp", (*Payload).Timestamp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := tc.set(NewPayload(), time.Unix(0, 999999999))
+			b, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := `{"aps":{"` + tc.name + `":0}}`; string(b) != want {
+				t.Fatalf("got %s, want %s", b, want)
+			}
+			b, err = json.Marshal(tc.set(p, time.Time{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != `{"aps":{}}` {
+				t.Fatalf("zero time was not omitted: %s", b)
 			}
 		})
 	}

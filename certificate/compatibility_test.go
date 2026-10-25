@@ -121,7 +121,7 @@ func TestPEMSEC1KeyAndChain(t *testing.T) {
 		combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
 	}
 	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})...)
-	loaded, err := certificate.FromPemBytes(combined, "")
+	loaded, err := certificate.FromPemBytes(combined)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestPEMRejectsMismatchedPrivateKey(t *testing.T) {
 	}
 	combined := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
-	loaded, err := certificate.FromPemBytes(combined, "")
+	loaded, err := certificate.FromPemBytes(combined)
 	if err == nil || len(loaded.Certificate) != 0 || loaded.PrivateKey != nil {
 		t.Fatal("accepted a certificate with an unrelated private key")
 	}
@@ -163,7 +163,7 @@ func TestPEMRejectsMalformedCertificate(t *testing.T) {
 	}
 	combined := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("invalid DER")})
 	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
-	loaded, err := certificate.FromPemBytes(combined, "")
+	loaded, err := certificate.FromPemBytes(combined)
 	if !errors.Is(err, certificate.ErrFailedToParseCertificate) {
 		t.Fatalf("error = %v, want ErrFailedToParseCertificate", err)
 	}
@@ -181,7 +181,7 @@ func TestPEMUsesFirstPrivateKey(t *testing.T) {
 	combined := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
 	combined = append(combined, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("trailing garbage")})...)
-	loaded, err := certificate.FromPemBytes(combined, "")
+	loaded, err := certificate.FromPemBytes(combined)
 	if err != nil {
 		t.Fatal(err)
 	}
