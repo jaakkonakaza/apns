@@ -59,21 +59,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  vulnerabilities:
-    name: Vulnerability scan
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      - name: Check vulnerabilities
-        run: make vuln
-
   coverage:
     name: Coverage upload
     needs: test
@@ -93,10 +78,7 @@ jobs:
         with:
           name: coverage
 
-      - name: Install goveralls
-        run: go install github.com/mattn/goveralls@v0.0.12
-
       - name: Update coverage
         env:
           COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: goveralls -coverprofile=covprofile -service=github
+        run: make upload-coverage

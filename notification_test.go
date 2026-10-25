@@ -1,7 +1,8 @@
 package apns2_test
 
 import (
-	"reflect"
+	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/sideshow/apns2"
@@ -26,10 +27,10 @@ func TestMarshalJSON(t *testing.T) {
 		notification.Payload = scenario.in
 		payloadBytes, err := notification.MarshalJSON()
 
-		if got, want := payloadBytes, scenario.out; !reflect.DeepEqual(got, want) {
+		if got, want := payloadBytes, scenario.out; !bytes.Equal(got, want) {
 			t.Errorf("got %#v, want %#v", got, want)
 		}
-		if got, want := err, scenario.err; !reflect.DeepEqual(got, want) {
+		if got, want := err, scenario.err; !errors.Is(got, want) {
 			t.Errorf("got %#v, want %#v", got, want)
 		}
 	}

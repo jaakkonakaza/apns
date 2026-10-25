@@ -5,6 +5,16 @@ run:
 
 linters:
   default: standard
+  settings:
+    govet:
+      # Additional gopls correctness checks beyond govet's default suite.
+      enable:
+        - atomicalign
+        - deepequalerrors
+        - nilness
+        - reflectvaluecompare
+        - sortslice
+        - unusedwrite
   exclusions:
     rules:
       - path: ^client(_test)?\.go$

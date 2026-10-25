@@ -35,10 +35,12 @@ go test -race ./...
 ## Development
 
 Run `make tools` to install the pinned development tools into `.bin/`.
+Run `make update-tools` to refresh the linter, vulnerability scanner, and coverage
+uploader pins, then run `make check` before committing the updates.
 
 - `make fmt` formats Go files with gofumpt and goimports.
 - `make fmt-check` checks formatting without changing files.
-- `make lint` runs golangci-lint's standard checks: govet, staticcheck, errcheck, ineffassign, and unused.
+- `make lint` checks Go code for issues.
 - `make build` builds the library, CLI, and examples.
 - `make test` runs tests with race detection.
 - `make vuln` checks for known vulnerabilities with govulncheck.

@@ -1,0 +1,32 @@
+{
+  "lsp": {
+    "gopls": {
+      "initialization_options": {
+        "analyses": {
+          "atomicalign": true,
+          "deepequalerrors": true,
+          "nilness": true,
+          "reflectvaluecompare": true,
+          "sortslice": true,
+          "unusedwrite": true,
+        },
+        "gofumpt": true,
+      },
+    },
+  },
+  "languages": {
+    "Go": {
+      "format_on_save": "on",
+      "formatter": [
+        {
+          "code_action": "source.organizeImports",
+        },
+        {
+          "language_server": {
+            "name": "gopls",
+          },
+        },
+      ],
+    },
+  },
+}

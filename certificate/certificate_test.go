@@ -112,7 +112,7 @@ func TestUnsupportedEncryptedCertificateFromPemFile(t *testing.T) {
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := err, certificate.ErrFailedToParsePrivateKey; !reflect.DeepEqual(got, want) {
+	if got, want := err, certificate.ErrFailedToParsePrivateKey; !errors.Is(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -132,7 +132,7 @@ func TestBadKeyPemFile(t *testing.T) {
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := err, certificate.ErrFailedToParsePrivateKey; !reflect.DeepEqual(got, want) {
+	if got, want := err, certificate.ErrFailedToParsePrivateKey; !errors.Is(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -142,7 +142,7 @@ func TestNoKeyPemFile(t *testing.T) {
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := err, certificate.ErrNoPrivateKey; !reflect.DeepEqual(got, want) {
+	if got, want := err, certificate.ErrNoPrivateKey; !errors.Is(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -152,7 +152,7 @@ func TestNoCertificatePemFile(t *testing.T) {
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := err, certificate.ErrNoCertificate; !reflect.DeepEqual(got, want) {
+	if got, want := err, certificate.ErrNoCertificate; !errors.Is(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
