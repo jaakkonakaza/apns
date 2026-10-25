@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -18,14 +19,14 @@ func TestHelpAndVersion(t *testing.T) {
 		if err := run([]string{help}, strings.NewReader(""), io.Discard, &output); err != nil {
 			t.Fatal(err)
 		}
-		for _, flag := range []string{"certificate-path", "topic", "mode", "version"} {
+		for _, flag := range []string{"certificate-path", "auth-key-path", "key-id", "team-id", "priority", "push-type", "topic", "mode", "version"} {
 			if !strings.Contains(output.String(), flag) {
 				t.Errorf("help missing %s", flag)
 			}
 		}
 	}
 	var output bytes.Buffer
-	if err := run([]string{"--version"}, strings.NewReader(""), &output, io.Discard); err != nil || output.String() != "0.1\n" {
+	if err := run([]string{"--version"}, strings.NewReader(""), &output, io.Discard); err != nil || output.String() != applicationVersion()+"\n" {
 		t.Fatalf("version = %q, %v", output.String(), err)
 	}
 }
@@ -84,5 +85,82 @@ func TestCLISend(t *testing.T) {
 	}
 	if output.String() != "200: ''\n" {
 		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestTokenAuthenticationAndPriority(t *testing.T) {
+	for _, tc := range []struct {
+		pushType, priority, wantPriority string
+	}{
+		{"alert", "0", ""},
+		{"background", "5", "5"},
+		{"liveactivity", "10", "10"},
+		{"location", "1", "1"},
+	} {
+		t.Run(tc.pushType, func(t *testing.T) {
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.ProtoMajor != 2 || r.Method != http.MethodPost || r.URL.Path != "/3/device/aabbcc" {
+					t.Errorf("unexpected request: %s %s %s", r.Proto, r.Method, r.URL.Path)
+				}
+				if got := r.Header.Get("authorization"); !strings.HasPrefix(got, "bearer ") || len(strings.Split(strings.TrimPrefix(got, "bearer "), ".")) != 3 {
+					t.Error("missing provider bearer token")
+				}
+				if got := r.Header.Get("apns-push-type"); got != tc.pushType {
+					t.Errorf("push type = %q, want %q", got, tc.pushType)
+				}
+				if got := r.Header.Get("apns-priority"); got != tc.wantPriority {
+					t.Errorf("priority = %q, want %q", got, tc.wantPriority)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			server.EnableHTTP2 = true
+			server.StartTLS()
+			defer server.Close()
+			args := []string{"--auth-key-path=../../token/testdata/authkey-valid.p8", "--key-id=KEY123", "--team-id=TEAM123", "--topic=com.example", "--push-type=" + tc.pushType, "--priority=" + tc.priority}
+			var output bytes.Buffer
+			if err := run(args, strings.NewReader("aabbcc {}\n"), &output, io.Discard, apns2.WithHost(server.URL), apns2.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
+				t.Fatal(err)
+			}
+			if got := output.String(); got != "200: ''\n" {
+				t.Fatalf("output = %q", got)
+			}
+		})
+	}
+}
+
+func TestInvalidAuthenticationAndPriority(t *testing.T) {
+	for _, extra := range [][]string{
+		{"--auth-key-path=missing"},
+		{"--auth-key-path=missing", "--key-id=KEY123"},
+		{"--key-id=KEY123", "--team-id=TEAM123"},
+		{"--certificate-path=missing", "--auth-key-path=missing", "--key-id=KEY123", "--team-id=TEAM123"},
+		{"--certificate-path=missing", "--key-id=KEY123"},
+		{"--certificate-path=missing", "--priority=2"},
+		{"--certificate-path=missing", "--priority=-1"},
+	} {
+		args := append([]string{"--topic=com.example"}, extra...)
+		if err := run(args, strings.NewReader(""), io.Discard, io.Discard); err == nil || strings.Contains(err.Error(), "load certificate") || strings.Contains(err.Error(), "load signing key") {
+			t.Errorf("authentication or priority was not rejected before loading files: %q: %v", args, err)
+		}
+	}
+}
+
+func TestVersionString(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		info debug.BuildInfo
+		want string
+	}{
+		{"release", debug.BuildInfo{Main: debug.Module{Version: "v2.1.0"}}, "v2.1.0"},
+		{"development", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}, "dev"},
+		{"no metadata", debug.BuildInfo{}, "dev"},
+		{"revision", debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "1234567890abcdef"}}}, "dev (1234567890ab)"},
+		{"dirty revision", debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "1234567890abcdef"}, {Key: "vcs.modified", Value: "true"}}}, "dev (1234567890ab-dirty)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := versionString(&tc.info); got != tc.want {
+				t.Errorf("version = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
