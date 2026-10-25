@@ -95,7 +95,6 @@ const (
 
 // Notification represents the the data and metadata for a APNs Remote Notification.
 type Notification struct {
-
 	// An optional canonical UUID that identifies the notification. The
 	// canonical form is 32 lowercase hexadecimal digits, displayed in five
 	// groups separated by hyphens in the form 8-4-4-4-12. An example UUID is as

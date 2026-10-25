@@ -38,7 +38,6 @@ func main() {
 
 	client := apns2.NewClient(cert).Production()
 	res, err := client.Push(notification)
-
 	if err != nil {
 		log.Fatal("Error:", err)
 	}

@@ -1,11 +1,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
-
-	"flag"
 
 	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/certificate"

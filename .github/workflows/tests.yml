@@ -9,26 +9,34 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        go: ['1.27.3']
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v7.0.0
         with:
-          go-version: ${{ matrix.go }}
+          go-version-file: go.mod
+
+      - name: Install development tools
+        run: make tools
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Lint
+        run: make lint
+
+      - name: Check vulnerabilities
+        run: make vuln
 
       - name: Install goveralls
-        run: go install github.com/mattn/goveralls@latest
+        run: go install github.com/mattn/goveralls@v0.0.12
 
       - name: Build
-        run: go build -v ./...
+        run: make build
 
       - name: Run tests
-        run: go test -race -covermode=atomic -coverprofile=covprofile -v ./...
+        run: make coverage
 
       - name: Update coverage
         env:

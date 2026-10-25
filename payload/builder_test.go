@@ -166,14 +166,14 @@ func TestContentState(t *testing.T) {
 }
 
 func TestDismissalDate(t *testing.T) {
-	timestamp := time.Date(2023, 1, 27, 12, 14, 00, 00, time.UTC).Unix()
+	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC).Unix()
 	payload := NewPayload().SetDismissalDate(timestamp)
 	b, _ := json.Marshal(payload)
 	assert.Equal(t, `{"aps":{"dismissal-date":1674821640}}`, string(b))
 }
 
 func TestStaleDate(t *testing.T) {
-	timestamp := time.Date(2023, 1, 27, 12, 14, 00, 00, time.UTC).Unix()
+	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC).Unix()
 	payload := NewPayload().SetStaleDate(timestamp)
 	b, _ := json.Marshal(payload)
 	assert.Equal(t, `{"aps":{"stale-date":1674821640}}`, string(b))
@@ -192,7 +192,7 @@ func TestEventUpdate(t *testing.T) {
 }
 
 func TestTimestamp(t *testing.T) {
-	timestamp := time.Date(2023, 1, 27, 12, 14, 00, 00, time.UTC).Unix()
+	timestamp := time.Date(2023, 1, 27, 12, 14, 0o0, 0o0, time.UTC).Unix()
 	payload := NewPayload().SetTimestamp(timestamp)
 	b, _ := json.Marshal(payload)
 	assert.Equal(t, `{"aps":{"timestamp":1674821640}}`, string(b))

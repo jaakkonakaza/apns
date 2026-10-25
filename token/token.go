@@ -70,7 +70,9 @@ func (t *Token) GenerateIfExpired() (bearer string) {
 	t.Lock()
 	defer t.Unlock()
 	if t.Expired() {
-		t.Generate()
+		// Preserve this method's existing behavior of returning the cached bearer
+		// when signing fails. Call Generate directly to receive signing errors.
+		_, _ = t.Generate()
 	}
 	return t.Bearer
 }

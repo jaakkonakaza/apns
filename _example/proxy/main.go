@@ -12,7 +12,6 @@ import (
 
 	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/certificate"
-	"golang.org/x/net/http2"
 )
 
 func main() {
@@ -36,21 +35,17 @@ func main() {
 		Certificates: []tls.Certificate{certificate},
 	}
 
-	if len(certificate.Certificate) > 0 {
-		tlsConfig.BuildNameToCertificate()
-	}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
 
 	transport := &http.Transport{
 		TLSClientConfig: tlsConfig,
+		Protocols:       protocols,
 		Proxy: func(request *http.Request) (*url.URL, error) {
 			return url.Parse(*proxy)
 		},
 		IdleConnTimeout: 60 * time.Second,
-	}
-
-	transportErr := http2.ConfigureTransport(transport)
-	if transportErr != nil {
-		log.Fatal("Transport Error:", transportErr)
 	}
 
 	client := &apns2.Client{
@@ -73,7 +68,6 @@ func main() {
 	`)
 
 	res, err := client.Push(notification)
-
 	if err != nil {
 		log.Fatal("Error:", err)
 	}

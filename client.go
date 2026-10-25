@@ -184,7 +184,10 @@ func (c *Client) PushWithContext(ctx Context, n *Notification) (*Response, error
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		// Closing a response body after reading it cannot change the push result.
+		_ = response.Body.Close()
+	}()
 
 	r := &Response{}
 	r.StatusCode = response.StatusCode

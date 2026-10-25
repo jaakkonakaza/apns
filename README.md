@@ -32,6 +32,18 @@ To run the test suite from this repository:
 go test -race ./...
 ```
 
+## Development
+
+Run `make tools` to install the pinned development tools into `.bin/`.
+
+- `make fmt` formats Go files with gofumpt and goimports.
+- `make fmt-check` checks formatting without changing files.
+- `make lint` runs golangci-lint's standard checks: govet, staticcheck, errcheck, ineffassign, and unused.
+- `make build` builds the library, CLI, and examples.
+- `make test` runs tests with race detection.
+- `make vuln` checks for known vulnerabilities with govulncheck.
+- `make check` runs formatting, lint, build, test, and vulnerability checks.
+
 ## Example
 
 ```go

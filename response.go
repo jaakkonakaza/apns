@@ -115,7 +115,6 @@ const (
 // notification was accepted or rejected and (if applicable) the metadata
 // surrounding the rejection.
 type Response struct {
-
 	// The HTTP status code returned by APNs.
 	// A 200 value indicates that the notification was successfully sent.
 	// For a list of other possible status codes, see table 6-4 in the Apple Local

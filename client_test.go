@@ -150,7 +150,9 @@ func TestDialTLSTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := listener.Addr().String()
-	defer listener.Close()
+	defer func() {
+		assert.NoError(t, listener.Close())
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), apns.TLSDialTimeout)
 	defer cancel()
@@ -198,7 +200,7 @@ func TestDefaultHeaders(t *testing.T) {
 func TestClientPushWithContextWithTimeout(t *testing.T) {
 	const timeout = time.Nanosecond
 	n := mockNotification()
-	var apnsID = "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
+	apnsID := "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("apns-id", apnsID)
@@ -216,7 +218,7 @@ func TestClientPushWithContextWithTimeout(t *testing.T) {
 
 func TestClientPushWithContext(t *testing.T) {
 	n := mockNotification()
-	var apnsID = "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
+	apnsID := "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("apns-id", apnsID)
@@ -231,7 +233,7 @@ func TestClientPushWithContext(t *testing.T) {
 
 func TestClientPushWithNilContext(t *testing.T) {
 	n := mockNotification()
-	var apnsID = "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
+	apnsID := "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("apns-id", apnsID)
@@ -417,8 +419,8 @@ func TestBadPayload(t *testing.T) {
 
 func Test200SuccessResponse(t *testing.T) {
 	n := mockNotification()
-	var apnsID = "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
-	var apnsUniqueID = "A6739D99-D92A-424B-A91E-BF012365BD4E"
+	apnsID := "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
+	apnsUniqueID := "A6739D99-D92A-424B-A91E-BF012365BD4E"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("apns-id", apnsID)
@@ -436,12 +438,13 @@ func Test200SuccessResponse(t *testing.T) {
 
 func Test400BadRequestPayloadEmptyResponse(t *testing.T) {
 	n := mockNotification()
-	var apnsID = "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
+	apnsID := "02ABC856-EF8D-4E49-8F15-7B8A61D978D6"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("apns-id", apnsID)
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("{\"reason\":\"PayloadEmpty\"}"))
+		_, err := w.Write([]byte("{\"reason\":\"PayloadEmpty\"}"))
+		assert.NoError(t, err)
 	}))
 	defer server.Close()
 	res, err := mockClient(server.URL).Push(n)
@@ -454,12 +457,13 @@ func Test400BadRequestPayloadEmptyResponse(t *testing.T) {
 
 func Test410UnregisteredResponse(t *testing.T) {
 	n := mockNotification()
-	var apnsID = "9F595474-356C-485E-B67F-9870BAE68702"
+	apnsID := "9F595474-356C-485E-B67F-9870BAE68702"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("apns-id", apnsID)
 		w.WriteHeader(http.StatusGone)
-		w.Write([]byte("{\"reason\":\"Unregistered\", \"timestamp\": 1458114061260 }"))
+		_, err := w.Write([]byte("{\"reason\":\"Unregistered\", \"timestamp\": 1458114061260 }"))
+		assert.NoError(t, err)
 	}))
 	defer server.Close()
 	res, err := mockClient(server.URL).Push(n)
@@ -475,7 +479,8 @@ func TestMalformedJSONResponse(t *testing.T) {
 	n := mockNotification()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write([]byte("{{MalformedJSON}}"))
+		_, err := w.Write([]byte("{{MalformedJSON}}"))
+		assert.NoError(t, err)
 	}))
 	defer server.Close()
 	res, err := mockClient(server.URL).Push(n)

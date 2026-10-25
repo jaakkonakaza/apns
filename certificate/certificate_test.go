@@ -70,6 +70,7 @@ func TestValidCertificateFromPemBytesWithPKCS8PrivateKey(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEqual(t, tls.Certificate{}, cer)
 }
+
 func TestUnsupportedEncryptedCertificateFromPemFile(t *testing.T) {
 	cer, err := certificate.FromPemFile("_fixtures/certificate-legacy-encrypted-unsupported.pem", "password")
 	assert.Equal(t, tls.Certificate{}, cer)
