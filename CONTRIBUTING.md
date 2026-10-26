@@ -2,8 +2,9 @@
 
 ## Bugs and changes
 
-Include the library version or commit, Go version, expected behavior, and a
-minimal reproduction when reporting a bug or proposing a change. Use synthetic
+Use [GitHub Issues](https://github.com/jaakkonakaza/apns/issues) for ordinary bugs
+and feature requests. Include the library version or commit, Go version, expected
+behavior, and a minimal reproduction when reporting a bug. Use synthetic
 payloads and credentials. Report vulnerabilities privately as described in
 [SECURITY.md](SECURITY.md).
 
