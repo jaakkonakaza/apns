@@ -64,14 +64,17 @@ func main() {
   if err != nil {
     log.Fatal(err)
   }
-  provider := &token.Token{
-    AuthKey: authKey,
-    KeyID:   "ABC123DEFG", // Certificates, Identifiers & Profiles -> Keys
-    TeamID:  "DEF123GHIJ", // Membership details
+  provider, err := token.New(authKey, "ABC123DEFG", "DEF123GHIJ")
+  if err != nil {
+    log.Fatal(err)
   }
 
   // Use HostDevelopment for builds installed directly from Xcode.
-  client := apns2.NewTokenClient(provider, apns2.WithHost(apns2.HostProduction))
+  client, err := apns2.NewTokenClient(provider, apns2.WithHost(apns2.HostProduction))
+  if err != nil {
+    log.Fatal(err)
+  }
+  defer client.CloseIdleConnections()
   res, err := client.Push(context.Background(), &apns2.Notification{
     DeviceToken: "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7",
     Topic:       "com.example.app",
@@ -81,7 +84,7 @@ func main() {
   if err != nil {
     log.Fatal(err)
   }
-  fmt.Println(res.StatusCode, res.ApnsID, res.Reason)
+  fmt.Println(res.StatusCode, res.APNSID, res.Reason)
 }
 ```
 
@@ -91,7 +94,10 @@ func main() {
 - A signing key doesn’t expire but can be revoked.
 
 Reuse one `*token.Token` per signing identity. For short-lived processes,
-`IssuedAt` and `Restore` let you reuse a previously signed bearer.
+`Snapshot` returns an atomic bearer/issue-time pair for persistence. Pass that
+pair to `Restore` when starting another process with the same signing identity.
+Keep persisted bearers private. The token constructor validates and copies its
+signing key and identifiers.
 
 ### Certificate authentication
 
@@ -103,11 +109,14 @@ cert, err := certificate.FromP12File("cert.p12", "password")
 if err != nil {
   log.Fatal(err)
 }
-client := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+client, err := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+if err != nil {
+  log.Fatal(err)
+}
 ```
 
 For a combined PEM certificate and private key, use
-`certificate.FromPemFile("certificate.pem")`. Encrypted PEM keys are unsupported.
+`certificate.FromPEMFile("certificate.pem")`. Encrypted PEM keys are unsupported.
 
 ## Notification
 
@@ -123,16 +132,18 @@ notification := &apns2.Notification{
 }
 ```
 
-You can also set an optional _ApnsID_, _Expiration_ or _Priority_.
+You can also set an optional _APNSID_, _Expiration_ or _Priority_.
 
 ```go
-notification.ApnsID = "40636a2c-c093-493e-936a-2a4333c06dea"
+notification.APNSID = "40636a2c-c093-493e-936a-2a4333c06dea"
 notification.Expiration = time.Now()
 notification.Priority = apns2.PriorityLow
 ```
 
-For other push types, set `Priority` and the matching topic suffix too; the
-`PushType` constants name each suffix.
+Set the topic suffix required by the push type. Background notifications default
+to priority 5 and reject other explicit priorities. Other push types leave an
+unset priority to APNs. `Push` validates that the encoded payload is a JSON
+object within the 4096-byte device limit, or 5120 bytes for VoIP.
 
 ## Payload
 
@@ -152,7 +163,9 @@ Live Activity payloads use the same builder:
 ```go
 payload := payload.NewPayload().
   Event(payload.LiveActivityEventUpdate).
-  ContentState(map[string]any{"progress": 0.5}).
+  ContentState(struct {
+    Progress float64 `json:"progress"`
+  }{Progress: 0.5}).
   Timestamp(time.Now()).
   StaleDate(time.Now().Add(5*time.Minute))
 
@@ -167,12 +180,15 @@ Refer to the [payload](https://pkg.go.dev/github.com/jaakkonakaza/apns2/payload)
 ## Broadcast notifications and channels
 
 `BroadcastClient` sends Live Activity updates to channels and supports channel
-creation, inspection, listing, and deletion. Set both endpoints explicitly:
+creation, inspection, listing, and deletion. Select an endpoint pair at
+construction:
 
 ```go
-broadcast := apns2.NewBroadcastTokenClient(provider)
-broadcast.Host = apns2.HostBroadcastDevelopment
-broadcast.ChannelHost = apns2.HostChannelDevelopment
+broadcast, err := apns2.NewBroadcastTokenClient(provider,
+  apns2.DevelopmentBroadcastEndpoints())
+if err != nil {
+  log.Fatal(err)
+}
 defer broadcast.CloseIdleConnections()
 
 channel, err := broadcast.CreateChannel(ctx,
@@ -193,10 +209,11 @@ Enable the app's broadcast capability in Apple Developer before using channels.
 
 ## Response, Error handling
 
-`Push` returns a response for APNs acceptance or rejection. Check `Sent()` to
+`Push` returns a response for APNs acceptance or rejection. Check `Success()` to
 see whether APNs accepted the notification. Request, transport, and response
 decoding failures return an error. When response decoding fails, the response
-still contains the HTTP status and APNs identifiers.
+still contains the HTTP status, APNs identifiers, and response `Header`.
+Unknown APNs reason strings are retained.
 
 Check the error first. A response may still be present when decoding fails:
 
@@ -207,25 +224,52 @@ if err != nil {
   return
 }
 
-if res.Sent() {
-  log.Println("Sent:", res.ApnsID)
+if res.Success() {
+  log.Println("Sent:", res.APNSID)
 } else {
-  fmt.Printf("Not Sent: %v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
+  fmt.Printf("Not Sent: %v %v %v\n", res.StatusCode, res.APNSID, res.Reason)
 }
 ```
+
+`Push` never retries automatically. Use the response status and reason to choose
+an application policy. Apple's [response guidance](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)
+distinguishes these cases:
+
+| Response | Caller action |
+| --- | --- |
+| `BadDeviceToken`, `DeviceTokenNotForTopic`, `Forbidden`, `ExpiredToken`, `Unregistered`, `PayloadTooLarge` | Do not resend the same rejected notification. Correct the destination, authorization, or payload before sending new work. |
+| Other 4xx responses | Fix the reported reason before retrying. |
+| `TooManyRequests` | Retry after a delay, with backoff. |
+| 5xx responses | Apple's guidance permits retrying after 15 minutes, with backoff. |
+| Transport failure | Decide whether to retry, accounting for uncertain acceptance. |
+
+`Header.Get("Retry-After")` preserves server or intermediary retry metadata when
+present. Its presence is not assumed, and the library does not choose a delay.
 
 ## Context & Timeouts
 
 Configure each client when creating it:
 
 ```go
-client := apns2.NewTokenClient(authToken,
+client, err := apns2.NewTokenClient(authToken,
   apns2.WithHost(apns2.HostProduction),
   apns2.WithTimeout(30*time.Second),
   apns2.WithDialTimeout(5*time.Second),
   apns2.WithReadIdleTimeout(15*time.Second),
 )
+if err != nil {
+  log.Fatal(err)
+}
 ```
+
+Constructors validate endpoint and authentication configuration before returning.
+They do not connect to APNs. A client's endpoint and identity remain fixed.
+
+Use `WithTransportWrapper` to wrap the default transport for instrumentation
+without replacing its certificate, protocol settings, or idle cleanup. Use
+`httptrace.WithClientTrace` on a request context for standard HTTP tracing.
+`WithHTTPClient` transfers transport and TLS configuration to a supplied client,
+which must already carry its certificate for certificate authentication.
 
 Every push takes a context for cancellation and individual request deadlines:
 
@@ -246,7 +290,14 @@ keyed by team, key ID, public key, and host. Reuse the returned client across
 pushes.
 
 ```go
-manager := apns2.NewClientManager(apns2.WithHost(apns2.HostProduction))
+manager, err := apns2.NewClientManager(apns2.ManagerConfig{
+  Host: apns2.HostProduction,
+  MaxSize: 64,
+})
+if err != nil {
+  log.Fatal(err)
+}
+defer manager.CloseIdleConnections()
 client, err := manager.GetByToken(provider)
 if err != nil {
   log.Fatal(err)
@@ -256,8 +307,12 @@ if err != nil {
 Use `Remove(cert)` or `RemoveByToken(provider)` when credentials or topic access
 change, or APNs reports `UnrelatedKeyIdInToken`. A later lookup creates a fresh
 client. Removal closes idle connections without interrupting requests in use.
-Configure `Factory` or `TokenFactory` before concurrent use to customize client
-creation. `Add(client)` returns an error if the client has an invalid identity.
+Set `ManagerConfig.Factory` or `TokenFactory` to customize client creation.
+Factories and both lookup methods return errors. A lookup invalidated by removal
+returns `ErrClientRemoved`; a missing factory result returns `ErrClientUnavailable`.
+`Add(client)` returns an error for an invalid identity or mismatched host.
+`CloseIdleConnections()` closes idle connections across the cache without
+interrupting active requests. Zero cache size means no size limit.
 
 ## Command line tool
 
@@ -280,7 +335,9 @@ APNs response code and reason to STDOUT. Use `--help` (or `-h`) to list
 flags and `--version` to print the module version or development build revision.
 Choose certificate authentication or supply all three token authentication flags.
 `--push-type` selects the notification type, and `--priority` accepts 1, 5, or 10.
-The default priority, 0, omits the header.
+Priority 0 uses the push type's default. The CLI prints every APNs response and
+returns a failure status if any notification is rejected. Transport, input, or
+output errors stop the batch immediately.
 
 ## License
 
