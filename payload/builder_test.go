@@ -281,8 +281,8 @@ func TestAttributes(t *testing.T) {
 	}
 }
 
-func TestMdm(t *testing.T) {
-	payload := NewPayload().Mdm("996ac527-9993-4a0a-8528-60b2b3c2f52b")
+func TestMDM(t *testing.T) {
+	payload := NewPayload().MDM("996ac527-9993-4a0a-8528-60b2b3c2f52b")
 	b, _ := json.Marshal(payload)
 	if got, want := string(b), `{"mdm":"996ac527-9993-4a0a-8528-60b2b3c2f52b"}`; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -484,10 +484,10 @@ func TestLiveActivityRelevanceScore(t *testing.T) {
 	}
 }
 
-func TestMdmRejectsOtherKeys(t *testing.T) {
+func TestMDMRejectsOtherKeys(t *testing.T) {
 	for name, payload := range map[string]*Payload{
-		"aps field":  NewPayload().Mdm("magic").Badge(1),
-		"custom key": NewPayload().Mdm("magic").Custom("key", "val"),
+		"aps field":  NewPayload().MDM("magic").Badge(1),
+		"custom key": NewPayload().MDM("magic").Custom("key", "val"),
 	} {
 		if _, err := json.Marshal(payload); err == nil {
 			t.Errorf("%s: MDM payload with other keys was accepted", name)
@@ -510,7 +510,7 @@ func TestLiveActivityAlert(t *testing.T) {
 	}
 }
 
-func TestCustomMdmKeyIsNotMDM(t *testing.T) {
+func TestCustomMDMKeyIsNotMDM(t *testing.T) {
 	payload := NewPayload().Alert("hi").Custom("mdm", "metadata")
 	b, err := json.Marshal(payload)
 	if err != nil {

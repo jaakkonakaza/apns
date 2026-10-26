@@ -3,8 +3,11 @@
 package payload
 
 import (
+	"bytes"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"maps"
 	"reflect"
 	"time"
@@ -72,13 +75,13 @@ type aps struct {
 	RelevanceScore    *float64          `json:"relevance-score,omitempty"`
 	Sound             any               `json:"sound,omitempty"`
 	ThreadID          string            `json:"thread-id,omitempty"`
-	ContentState      map[string]any    `json:"content-state,omitzero"`
+	ContentState      any               `json:"content-state,omitzero"`
 	DismissalDate     *int64            `json:"dismissal-date,omitempty"`
 	StaleDate         *int64            `json:"stale-date,omitempty"`
 	Event             LiveActivityEvent `json:"event,omitempty"`
 	Timestamp         *int64            `json:"timestamp,omitempty"`
 	AttributesType    string            `json:"attributes-type,omitempty"`
-	Attributes        map[string]any    `json:"attributes,omitzero"`
+	Attributes        any               `json:"attributes,omitzero"`
 	TargetContentID   string            `json:"target-content-id,omitempty"`
 	FilterCriteria    string            `json:"filter-criteria,omitempty"`
 	ContentChanged    bool              `json:"content-changed,omitzero"`
@@ -130,15 +133,16 @@ func (p *Payload) Alert(alert any) *Payload {
 }
 
 // ContentState sets the aps content-state on the payload.
-// Its fields must match the Live Activity's ContentState type. An empty map
-// encodes an empty dictionary; nil removes the field. Include the final
-// content state when ending a Live Activity. ActivityKit decodes it with its
+// It accepts a JSON-encodable struct or map matching the Live Activity's
+// ContentState type. Empty objects are preserved. Nil and typed nil remove
+// the field. Include the final content state when ending a Live Activity.
+// ActivityKit decodes it with its
 // default JSON strategies, so encode dates the way Swift's default Date
 // decoding expects, as seconds since 2001-01-01, not as Go time.Time strings.
 //
 //	{"aps":{"content-state": {} }}
-func (p *Payload) ContentState(contentState map[string]any) *Payload {
-	p.aps().ContentState = contentState
+func (p *Payload) ContentState(contentState any) *Payload {
+	p.aps().ContentState = omitNil(contentState)
 	return p
 }
 
@@ -198,11 +202,12 @@ func (p *Payload) AttributesType(attributesType string) *Payload {
 
 // Attributes sets the aps attributes field on the payload.
 // This is used for push-to-start Live Activities and Now Playing remote media
-// sessions. An empty map encodes an empty dictionary; nil removes the field.
+// sessions. It accepts a JSON-encodable struct or map. Empty objects are
+// preserved. Nil and typed nil remove the field.
 //
 //	{"aps":{"attributes": attributes }}
-func (p *Payload) Attributes(attributes map[string]any) *Payload {
-	p.aps().Attributes = attributes
+func (p *Payload) Attributes(attributes any) *Payload {
+	p.aps().Attributes = omitNil(attributes)
 	return p
 }
 
@@ -415,13 +420,13 @@ func (p *Payload) Category(category string) *Payload {
 	return p
 }
 
-// Mdm sets the mdm on the payload.
+// MDM sets the mdm on the payload.
 // This is for Apple Mobile Device Management (mdm) payloads. Pass the PushMagic
 // string. An MDM payload is exactly {"mdm":...}: marshaling fails if other
 // keys or aps fields are set.
 //
 //	{"mdm":mdm}
-func (p *Payload) Mdm(mdm string) *Payload {
+func (p *Payload) MDM(mdm string) *Payload {
 	p.mdm = &mdm
 	return p
 }
@@ -534,7 +539,17 @@ func (p Payload) MarshalJSON() ([]byte, error) {
 	content := make(map[string]any, len(p.content)+1)
 	maps.Copy(content, p.content)
 	if _, custom := content["aps"]; !custom {
-		content["aps"] = &p.dictionary
+		dictionary := p.dictionary
+		var err error
+		dictionary.ContentState, err = marshalObject(dictionary.ContentState, "content-state")
+		if err != nil {
+			return nil, err
+		}
+		dictionary.Attributes, err = marshalObject(dictionary.Attributes, "attributes")
+		if err != nil {
+			return nil, err
+		}
+		content["aps"] = &dictionary
 	}
 	return json.Marshal(content, json.Deterministic(true))
 }
@@ -561,4 +576,33 @@ func unixSeconds(t time.Time) *int64 {
 	}
 	seconds := t.Unix()
 	return &seconds
+}
+
+func omitNil(value any) any {
+	if value == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if rv.IsNil() {
+			return nil
+		}
+	}
+	return value
+}
+
+func marshalObject(value any, field string) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(value, json.Deterministic(true))
+	if err != nil {
+		return nil, fmt.Errorf("payload: %s: %w", field, err)
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '{' {
+		return nil, fmt.Errorf("payload: %s must encode a JSON object", field)
+	}
+	return jsontext.Value(data), nil
 }
