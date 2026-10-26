@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add security reporting, contribution, and license documentation.
+
 ## v1.0.0-beta.1
 
 First prerelease of `github.com/jaakkonakaza/apns`, derived from `apns2`.
