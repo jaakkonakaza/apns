@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +90,7 @@ func NewClientManager(config ManagerConfig) (*ClientManager, error) {
 	if err := validateHost(config.Host, true); err != nil {
 		return nil, err
 	}
+	config.Host = strings.TrimSuffix(config.Host, "/")
 	if config.MaxSize < 0 || config.MaxAge < 0 {
 		return nil, errors.New("apns2: cache limits must not be negative")
 	}
@@ -100,7 +102,7 @@ func NewClientManager(config ManagerConfig) (*ClientManager, error) {
 	if clientConfig.httpClient != nil {
 		return nil, errors.New("apns2: manager ClientOptions cannot include WithHTTPClient, use a per-identity factory")
 	}
-	if clientConfig.host != "" && clientConfig.host != config.Host {
+	if clientConfig.hostSet && strings.TrimSuffix(clientConfig.host, "/") != config.Host {
 		return nil, errors.New("apns2: manager Host conflicts with WithHost")
 	}
 	if config.Factory == nil && config.TokenFactory == nil {

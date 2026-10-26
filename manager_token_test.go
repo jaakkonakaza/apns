@@ -311,3 +311,29 @@ func TestClientManagerRejectsFactoryIdentityMismatch(t *testing.T) {
 		t.Fatal("mismatched identity was cached")
 	}
 }
+
+func TestClientManagerNormalizesTrailingHostSlash(t *testing.T) {
+	provider := managerTestToken(t)
+	for _, test := range []struct {
+		host       string
+		optionHost string
+	}{
+		{HostDevelopment + "/", HostDevelopment},
+		{HostDevelopment, HostDevelopment + "/"},
+		{HostDevelopment + "/", HostDevelopment + "/"},
+	} {
+		t.Run(test.host+"/option="+test.optionHost, func(t *testing.T) {
+			manager := managerForTest(t, ManagerConfig{Host: test.host, ClientOptions: []ClientOption{WithHost(test.optionHost)}})
+			if manager.Host() != HostDevelopment {
+				t.Fatalf("host = %q, want %q", manager.Host(), HostDevelopment)
+			}
+			client, err := manager.GetByToken(provider)
+			if err != nil || client == nil || client.Host() != HostDevelopment {
+				t.Fatalf("normalized lookup = %v, %v", client, err)
+			}
+			if cached, err := manager.GetByToken(provider); err != nil || cached != client {
+				t.Fatalf("normalized cache lookup = %p, %v", cached, err)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ func TestClientManagerConfiguration(t *testing.T) {
 		{Host: apns2.HostDevelopment, MaxSize: -1},
 		{Host: apns2.HostDevelopment, MaxAge: -time.Second},
 		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{nil}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHost("")}},
 		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHTTPClient(&http.Client{})}},
 		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHost(apns2.HostProduction)}},
 	} {
