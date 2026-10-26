@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  verify:
+    name: Verify tagged release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Validate version and changelog
+        run: go run ./internal/release "$RELEASE_TAG"
+
+      - name: Run quality checks
+        run: make check
+
+      - name: Verify public module and CLI installation
+        env:
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+        run: bash scripts/verify-release.sh "$RELEASE_TAG"
+
+  publish:
+    name: Publish verified release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Create release from changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          go run ./internal/release "$RELEASE_TAG" >"$notes"
+          printf '\nVerified by [release workflow](%s/%s/actions/runs/%s).\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >>"$notes"
+          args=("$RELEASE_TAG" --verify-tag --title "apns $RELEASE_TAG" --notes-file "$notes")
+          if [[ $RELEASE_TAG == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"

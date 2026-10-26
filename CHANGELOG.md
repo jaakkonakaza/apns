@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Add security reporting, contribution, and license documentation.
-
 ## v1.0.0-beta.1
 
 First prerelease of `github.com/jaakkonakaza/apns`, derived from `apns2`.
@@ -16,6 +12,9 @@ The public API may change before `v1.0.0`.
 - Concurrent client caching by certificate or token identity, with removal and expiry.
 - Typed Live Activity content and attributes in the payload builder.
 - CLI certificate and token authentication, push priorities, and build version reporting.
+- Security reporting and contribution guidelines.
+- Tag-triggered release checks, public module installation verification, and
+  GitHub release notes from this changelog.
 
 ### Migrating from apns2
 
