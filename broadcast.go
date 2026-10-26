@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jaakkonakaza/apns2/token"
@@ -57,35 +59,78 @@ const (
 	ReasonTopicMismatch = "TopicMismatch"
 )
 
-// BroadcastClient sends broadcast push notifications to Live Activity
-// channels and manages those channels. Devices on iOS and iPadOS 18 and later
-// subscribe to channels. Channels can't be shared across environments.
+// BroadcastEndpoints selects the push and channel-management endpoints together.
+// The client copies this value during construction.
+type BroadcastEndpoints struct {
+	Push     string
+	Channels string
+}
+
+// DevelopmentBroadcastEndpoints returns Apple's dedicated sandbox endpoints.
+func DevelopmentBroadcastEndpoints() BroadcastEndpoints {
+	return BroadcastEndpoints{Push: HostBroadcastDevelopment, Channels: HostChannelDevelopment}
+}
+
+// ProductionBroadcastEndpoints returns Apple's dedicated production endpoints.
+func ProductionBroadcastEndpoints() BroadcastEndpoints {
+	return BroadcastEndpoints{Push: HostBroadcastProduction, Channels: HostChannelProduction}
+}
+
+// BroadcastClient sends Live Activity updates and manages channels in one environment.
 type BroadcastClient struct {
-	// Host is the broadcast push endpoint, HostBroadcastProduction or
-	// HostBroadcastDevelopment. There is no default.
-	Host string
-
-	// ChannelHost is the channel management endpoint, HostChannelProduction or
-	// HostChannelDevelopment. There is no default.
-	ChannelHost string
-
-	client *Client
+	endpoints BroadcastEndpoints
+	client    *Client
 }
 
-// NewBroadcastClient returns a certificate-authenticated broadcast client.
-// Host options are ignored; set Host and ChannelHost for the environment.
-func NewBroadcastClient(certificate tls.Certificate, options ...ClientOption) *BroadcastClient {
-	return newBroadcastClient(NewClient(certificate, options...))
+// Endpoints returns the endpoint pair selected during construction.
+func (c *BroadcastClient) Endpoints() BroadcastEndpoints { return c.endpoints }
+
+// NewBroadcastClient constructs a certificate-authenticated broadcast client.
+// Supply both endpoints explicitly. WithHost is unsupported for broadcast clients.
+func NewBroadcastClient(certificate tls.Certificate, endpoints BroadcastEndpoints, options ...ClientOption) (*BroadcastClient, error) {
+	config, endpoints, err := broadcastConfig(endpoints, options)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newCertificateClient(certificate, config)
+	if err != nil {
+		return nil, err
+	}
+	return &BroadcastClient{endpoints: endpoints, client: client}, nil
 }
 
-// NewBroadcastTokenClient returns a token-authenticated broadcast client.
-// Host options are ignored; set Host and ChannelHost for the environment.
-func NewBroadcastTokenClient(token *token.Token, options ...ClientOption) *BroadcastClient {
-	return newBroadcastClient(NewTokenClient(token, options...))
+// NewBroadcastTokenClient constructs a token-authenticated broadcast client.
+// Supply both endpoints explicitly. WithHost is unsupported for broadcast clients.
+func NewBroadcastTokenClient(provider *token.Token, endpoints BroadcastEndpoints, options ...ClientOption) (*BroadcastClient, error) {
+	config, endpoints, err := broadcastConfig(endpoints, options)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newTokenClient(provider, config)
+	if err != nil {
+		return nil, err
+	}
+	return &BroadcastClient{endpoints: endpoints, client: client}, nil
 }
 
-func newBroadcastClient(client *Client) *BroadcastClient {
-	return &BroadcastClient{client: client}
+func broadcastConfig(endpoints BroadcastEndpoints, options []ClientOption) (clientConfig, BroadcastEndpoints, error) {
+	config, err := clientConfigForOptions(options)
+	if err != nil {
+		return clientConfig{}, BroadcastEndpoints{}, err
+	}
+	if config.hostSet {
+		return clientConfig{}, BroadcastEndpoints{}, errors.New("apns2: use BroadcastEndpoints instead of WithHost for broadcast clients")
+	}
+	if err := validateHost(endpoints.Push, config.httpClient != nil); err != nil {
+		return clientConfig{}, BroadcastEndpoints{}, fmt.Errorf("apns2: broadcast push endpoint: %w", err)
+	}
+	if err := validateHost(endpoints.Channels, config.httpClient != nil); err != nil {
+		return clientConfig{}, BroadcastEndpoints{}, fmt.Errorf("apns2: channel endpoint: %w", err)
+	}
+	endpoints.Push = strings.TrimRight(endpoints.Push, "/")
+	endpoints.Channels = strings.TrimRight(endpoints.Channels, "/")
+	config.host = endpoints.Push
+	return config, endpoints, nil
 }
 
 // CloseIdleConnections closes idle broadcast and channel management connections.
@@ -120,20 +165,19 @@ type BroadcastNotification struct {
 	Payload any
 }
 
-// BroadcastResponse is the result of a broadcast push or channel request.
+// BroadcastResponse contains the metadata from a broadcast or channel request.
 type BroadcastResponse struct {
-	// Response includes the status and reason. Push also sets ApnsUniqueID,
-	// a successful push's identifier in both environments. ApnsID and
-	// Timestamp are unused: broadcast requests are identified by RequestID.
-	Response
-
-	// RequestID is the request's apns-request-id, generated by APNs if the
-	// request did not set one.
+	StatusCode int
+	Reason     string
+	Header     http.Header
+	// APNSUniqueID identifies an accepted broadcast push.
+	APNSUniqueID string
+	// RequestID identifies the request, generated by APNs if it was omitted.
 	RequestID string
 }
 
-// Success reports whether APNs accepted the request. Unlike Sent, it accepts
-// every 2xx status: channel creation returns 201 and deletion 204.
+// Success reports whether APNs accepted the request. Channel creation returns
+// 201 and deletion returns 204.
 func (r *BroadcastResponse) Success() bool {
 	return r.StatusCode >= 200 && r.StatusCode < 300
 }
@@ -153,14 +197,12 @@ func (c *BroadcastClient) Push(ctx context.Context, n *BroadcastNotification) (*
 	if priority != PriorityHigh && priority != PriorityLow && priority != PriorityPowerSaving {
 		return nil, errors.New("apns2: invalid broadcast priority")
 	}
-	payload, err := json.Marshal(&Notification{Payload: n.Payload})
+	payload, err := marshalPayload(n.Payload, 5120)
 	if err != nil {
 		return nil, err
 	}
-	if len(payload) > 5120 {
-		return nil, errors.New("apns2: broadcast payload exceeds 5120 bytes")
-	}
-	r, err := c.request(ctx, c.Host, http.MethodPost, "/4/broadcasts/apps/", n.BundleID, "", n.RequestID, n.ChannelID, payload, func(req *http.Request) {
+
+	r, err := c.request(ctx, c.endpoints.Push, http.MethodPost, "/4/broadcasts/apps/", n.BundleID, "", n.RequestID, n.ChannelID, payload, func(req *http.Request) {
 		req.Header.Set("apns-push-type", string(PushTypeLiveActivity))
 		req.Header.Set("apns-priority", strconv.Itoa(priority))
 		expiration := int64(0)
@@ -271,7 +313,7 @@ func (c *BroadcastClient) channelRequest(ctx context.Context, method string, r *
 	if list {
 		suffix = "/all-channels"
 	}
-	return c.request(ctx, c.ChannelHost, method, "/1/apps/", r.BundleID, suffix, r.RequestID, channelID, body, nil)
+	return c.request(ctx, c.endpoints.Channels, method, "/1/apps/", r.BundleID, suffix, r.RequestID, channelID, body, nil)
 }
 
 // Channel lists can contain up to 10,000 IDs, substantially more than a push response.
@@ -301,8 +343,8 @@ func (c *BroadcastClient) request(ctx context.Context, host, method, prefix, bun
 		headers(req)
 	}
 	var bearer string
-	if c.client.Token != nil {
-		bearer, err = c.client.Token.Bearer()
+	if c.client.token != nil {
+		bearer, err = c.client.token.Bearer()
 		if err != nil {
 			return nil, err
 		}
@@ -315,7 +357,8 @@ func (c *BroadcastClient) request(ctx context.Context, host, method, prefix, bun
 	defer func() { _ = resp.Body.Close() }()
 	r := &ChannelResponse{ChannelID: resp.Header.Get("apns-channel-id")}
 	r.StatusCode = resp.StatusCode
-	r.ApnsUniqueID = resp.Header.Get("apns-unique-id")
+	r.Header = resp.Header.Clone()
+	r.APNSUniqueID = resp.Header.Get("apns-unique-id")
 	r.RequestID = resp.Header.Get("apns-request-id")
 	limit := int64(maxResponseBytes)
 	if suffix == "/all-channels" {
@@ -341,8 +384,8 @@ func (c *BroadcastClient) request(ctx context.Context, host, method, prefix, bun
 	r.MessageStoragePolicy = result.Policy
 	r.PushType = result.PushType
 	r.ChannelIDs = result.Channels
-	if c.client.Token != nil && (r.Reason == ReasonExpiredProviderToken || r.Reason == ReasonInvalidProviderToken) {
-		c.client.Token.Invalidate(bearer)
+	if c.client.token != nil && (r.Reason == ReasonExpiredProviderToken || r.Reason == ReasonInvalidProviderToken) {
+		c.client.token.Invalidate(bearer)
 	}
 	return r, nil
 }

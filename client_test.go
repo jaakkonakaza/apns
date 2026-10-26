@@ -31,60 +31,59 @@ func (c *mockTransport) CloseIdleConnections() {
 
 // Unit Tests
 
-func TestPushRequiresHost(t *testing.T) {
+func TestConstructorsRequireHost(t *testing.T) {
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Error("push without a host was sent")
+		t.Error("client construction sent a request")
 		return nil, errors.New("unexpected request")
 	})
-	for name, client := range map[string]*apns.Client{
-		"certificate": apns.NewClient(mockCert(), apns.WithHTTPClient(&http.Client{Transport: transport})),
-		"token":       apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: transport})),
+	for name, construct := range map[string]func() (*apns.Client, error){
+		"certificate": func() (*apns.Client, error) {
+			return apns.NewClient(mockCert(), apns.WithHTTPClient(&http.Client{Transport: transport}))
+		},
+		"token": func() (*apns.Client, error) {
+			return apns.NewTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: transport}))
+		},
 	} {
-		if client.Host != "" {
-			t.Errorf("%s client host = %q, want no default", name, client.Host)
-		}
-		if _, err := client.Push(context.Background(), mockNotification()); err == nil {
-			t.Errorf("%s client pushed without a host", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			if client, err := construct(); err == nil || client != nil {
+				t.Fatalf("constructor = %v, %v, want missing-host error", client, err)
+			}
+		})
 	}
 }
 
 func TestClientDevelopmentHost(t *testing.T) {
-	client := apns.NewClient(mockCert(), apns.WithHost(apns.HostDevelopment))
-	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
+	client := mustClient(t, mockCert(), apns.WithHost(apns.HostDevelopment))
+	if got, want := client.Host(), "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
 
 func TestTokenClientDevelopmentHost(t *testing.T) {
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment))
-	if got, want := client.Host, "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
+	client := mustTokenClient(t, mockToken(), apns.WithHost(apns.HostDevelopment))
+	if got, want := client.Host(), "https://api.sandbox.push.apple.com"; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
 
 func TestClientProductionHost(t *testing.T) {
-	client := apns.NewClient(mockCert(), apns.WithHost(apns.HostProduction))
-	if got, want := client.Host, "https://api.push.apple.com"; !reflect.DeepEqual(got, want) {
+	client := mustClient(t, mockCert(), apns.WithHost(apns.HostProduction))
+	if got, want := client.Host(), "https://api.push.apple.com"; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
 
 func TestTokenClientProductionHost(t *testing.T) {
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostProduction))
-	if got, want := client.Host, "https://api.push.apple.com"; !reflect.DeepEqual(got, want) {
+	client := mustTokenClient(t, mockToken(), apns.WithHost(apns.HostProduction))
+	if got, want := client.Host(), "https://api.push.apple.com"; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
 
-func TestClientBadUrlError(t *testing.T) {
-	n := mockNotification()
-	res, err := mockClient("badurl://badurl.com").Push(context.Background(), n)
-	if got := err; got == nil {
-		t.Error("unexpected nil")
-	}
-	if got := res; got != nil {
-		t.Errorf("got %v, want nil", got)
+func TestClientBadURLError(t *testing.T) {
+	client, err := apns.NewClient(mockCert(), apns.WithHost("badurl://badurl.com"), apns.WithHTTPClient(&http.Client{}))
+	if err == nil || client != nil {
+		t.Fatalf("constructor = %v, %v, want invalid-host error", client, err)
 	}
 }
 
@@ -116,9 +115,8 @@ func TestDialTimeout(t *testing.T) {
 			accepted <- conn
 		}
 	}()
-	client := apns.NewTokenClient(mockToken(), apns.WithDialTimeout(dialTimeout))
+	client := mustTokenClient(t, mockToken(), apns.WithHost("https://"+listener.Addr().String()), apns.WithDialTimeout(dialTimeout))
 	defer client.CloseIdleConnections()
-	client.Host = "https://" + listener.Addr().String()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -232,20 +230,20 @@ func TestClientPush(t *testing.T) {
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
-	if got, want := apnsID, res.ApnsID; !reflect.DeepEqual(got, want) {
+	if got, want := apnsID, res.APNSID; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
 
 func TestHeaders(t *testing.T) {
 	n := mockNotification()
-	n.ApnsID = "84db694f-464f-49bd-960a-d6db028335c9"
+	n.APNSID = "84db694f-464f-49bd-960a-d6db028335c9"
 	n.CollapseID = "game1.start.identifier"
 	n.Topic = "com.testapp"
 	n.Priority = 10
 	n.Expiration = time.Now()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-id"), n.ApnsID; !reflect.DeepEqual(got, want) {
+		if got, want := r.Header.Get("apns-id"), n.APNSID; !reflect.DeepEqual(got, want) {
 			t.Errorf("got %#v, want %#v", got, want)
 		}
 		if got, want := r.Header.Get("apns-collapse-id"), n.CollapseID; !reflect.DeepEqual(got, want) {
@@ -270,13 +268,13 @@ func TestHeaders(t *testing.T) {
 
 func TestExpirationHeader(t *testing.T) {
 	n := mockNotification()
-	n.ApnsID = "84db694f-464f-49bd-960a-d6db028335c9"
+	n.APNSID = "84db694f-464f-49bd-960a-d6db028335c9"
 	n.CollapseID = "game1.start.identifier"
 	n.Topic = "com.testapp"
 	n.Priority = 10
 	n.Expiration = time.Unix(0, 0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Header.Get("apns-id"), n.ApnsID; !reflect.DeepEqual(got, want) {
+		if got, want := r.Header.Get("apns-id"), n.APNSID; !reflect.DeepEqual(got, want) {
 			t.Errorf("got %#v, want %#v", got, want)
 		}
 		if got, want := r.Header.Get("apns-collapse-id"), n.CollapseID; !reflect.DeepEqual(got, want) {
@@ -342,7 +340,7 @@ func TestPushRejectsInvalidNotifications(t *testing.T) {
 		"empty push type":         {modify: func(n *apns.Notification) { n.PushType = "" }},
 		"token client no topic":   {token: true, modify: func(n *apns.Notification) { n.Topic = "" }},
 		"collapse ID too long":    {modify: func(n *apns.Notification) { n.CollapseID = strings.Repeat("x", 65) }},
-		"apns-id without hyphens": {modify: func(n *apns.Notification) { n.ApnsID = "84db694f464f49bd960ad6db028335c9" }},
+		"apns-id without hyphens": {modify: func(n *apns.Notification) { n.APNSID = "84db694f464f49bd960ad6db028335c9" }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			n := mockNotification()
@@ -351,9 +349,9 @@ func TestPushRejectsInvalidNotifications(t *testing.T) {
 				t.Error("invalid notification was sent")
 				return nil, errors.New("unexpected request")
 			})
-			client := apns.NewClient(mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+			client := mustClient(t, mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
 			if tc.token {
-				client = apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+				client = mustTokenClient(t, mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
 			}
 			if _, err := client.Push(context.Background(), n); err == nil {
 				t.Fatal("invalid notification was accepted")
@@ -372,13 +370,13 @@ func TestPushSendsValidNotification(t *testing.T) {
 				sent = true
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
 			})
-			client := apns.NewClient(mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+			client := mustClient(t, mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
 			if token {
-				client = apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+				client = mustTokenClient(t, mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
 			}
 			n := mockNotification()
-			n.ApnsID = "84DB694F-464F-49BD-960A-D6DB028335C9"
-			if res, err := client.Push(context.Background(), n); err != nil || !res.Sent() || !sent {
+			n.APNSID = "84DB694F-464F-49BD-960A-D6DB028335C9"
+			if res, err := client.Push(context.Background(), n); err != nil || !res.Success() || !sent {
 				t.Fatalf("Push = %v, %v (sent %t), want a sent notification", res, err, sent)
 			}
 		})
@@ -401,7 +399,7 @@ func TestPushInvalidatesRejectedRestoredToken(t *testing.T) {
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})
-	client := apns.NewTokenClient(provider, apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
+	client := mustTokenClient(t, provider, apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
 	for range 2 {
 		if _, err := client.Push(context.Background(), mockNotification()); err != nil {
 			t.Fatal(err)
@@ -429,8 +427,7 @@ func TestAuthorizationHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := mockClient(server.URL)
-	client.Token = token
+	client := mustTokenClient(t, token, apns.WithHost(server.URL), apns.WithHTTPClient(server.Client()))
 	_, err = client.Push(context.Background(), n)
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
@@ -467,7 +464,7 @@ func TestBadPayload(t *testing.T) {
 func TestDuplicatePayloadKeysAreNotSent(t *testing.T) {
 	n := mockNotification()
 	n.Payload = `{"aps":{"alert":"one","alert":"two"}}`
-	client := apns.NewClient(mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := mustClient(t, mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Error("payload with duplicate keys was sent")
 		return nil, errors.New("unexpected request")
 	})}))
@@ -494,13 +491,13 @@ func Test200SuccessResponse(t *testing.T) {
 	if got, want := res.StatusCode, http.StatusOK; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.ApnsID, apnsID; !reflect.DeepEqual(got, want) {
+	if got, want := res.APNSID, apnsID; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.ApnsUniqueID, apnsUniqueID; !reflect.DeepEqual(got, want) {
+	if got, want := res.APNSUniqueID, apnsUniqueID; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.Sent(), true; !reflect.DeepEqual(got, want) {
+	if got, want := res.Success(), true; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -525,13 +522,13 @@ func Test400BadRequestPayloadEmptyResponse(t *testing.T) {
 	if got, want := res.StatusCode, 400; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.ApnsID, apnsID; !reflect.DeepEqual(got, want) {
+	if got, want := res.APNSID, apnsID; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 	if got, want := res.Reason, apns.ReasonPayloadEmpty; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.Sent(), false; !reflect.DeepEqual(got, want) {
+	if got, want := res.Success(), false; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -556,7 +553,7 @@ func Test410UnregisteredResponse(t *testing.T) {
 	if got, want := res.StatusCode, 410; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.ApnsID, apnsID; !reflect.DeepEqual(got, want) {
+	if got, want := res.APNSID, apnsID; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 	if got, want := res.Reason, apns.ReasonUnregistered; !reflect.DeepEqual(got, want) {
@@ -565,7 +562,7 @@ func Test410UnregisteredResponse(t *testing.T) {
 	if got, want := res.Timestamp.UnixMilli(), int64(1458114061260); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := res.Sent(), false; !reflect.DeepEqual(got, want) {
+	if got, want := res.Success(), false; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
@@ -607,7 +604,7 @@ func TestAmbiguousOrOversizedResponse(t *testing.T) {
 			if err == nil {
 				t.Fatal("accepted malformed response")
 			}
-			if res == nil || res.StatusCode != http.StatusBadRequest || res.ApnsID == "" {
+			if res == nil || res.StatusCode != http.StatusBadRequest || res.APNSID == "" {
 				t.Errorf("response metadata = %+v, want status and apns-id", res)
 			}
 		})
@@ -617,7 +614,7 @@ func TestAmbiguousOrOversizedResponse(t *testing.T) {
 func TestCloseIdleConnections(t *testing.T) {
 	transport := &mockTransport{}
 
-	client := apns.NewClient(mockCert(), apns.WithHTTPClient(&http.Client{Transport: transport}))
+	client := mustClient(t, mockCert(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: transport}))
 
 	if got, want := transport.closed, false; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -647,15 +644,14 @@ func TestConstructorHTTP2(t *testing.T) {
 				called <- cfg
 				return (&tls.Dialer{Config: cfg}).DialContext(ctx, network, addr)
 			}
-			options := []apns.ClientOption{apns.WithDialTLSContext(dial), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig), apns.WithReadIdleTimeout(25 * time.Millisecond)}
-			client := apns.NewClient(mockCert(), options...)
+			options := []apns.ClientOption{apns.WithHost(server.URL), apns.WithDialTLSContext(dial), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig), apns.WithReadIdleTimeout(25 * time.Millisecond)}
+			client := mustClient(t, mockCert(), options...)
 			if tokenAuth {
-				client = apns.NewTokenClient(mockToken(), options...)
+				client = mustTokenClient(t, mockToken(), options...)
 			}
 			defer client.CloseIdleConnections()
-			client.Host = server.URL
 			response, err := client.Push(context.Background(), mockNotification())
-			if err != nil || !response.Sent() {
+			if err != nil || !response.Success() {
 				t.Fatalf("HTTP/2 push: response=%v, error=%v", response, err)
 			}
 			cfg := <-called
@@ -671,7 +667,7 @@ func TestConstructorRejectsHTTP1(t *testing.T) {
 		t.Error("HTTP/1-only server received a push")
 	}))
 	defer server.Close()
-	client := apns.NewClient(mockCert(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
+	client := mustClient(t, mockCert(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
 	defer client.CloseIdleConnections()
 	if _, err := client.Push(context.Background(), mockNotification()); err == nil {
 		t.Fatal("HTTP/1-only endpoint accepted")
@@ -694,15 +690,14 @@ func TestConstructorRejectsNoALPN(t *testing.T) {
 	defer server.Close()
 	for _, customDial := range []bool{false, true} {
 		t.Run(fmt.Sprintf("customDial=%t", customDial), func(t *testing.T) {
-			options := []apns.ClientOption{apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)}
+			options := []apns.ClientOption{apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)}
 			if customDial {
 				options = append(options, apns.WithDialTLSContext(func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
 					return (&tls.Dialer{Config: cfg}).DialContext(ctx, network, addr)
 				}))
 			}
-			client := apns.NewTokenClient(mockToken(), options...)
+			client := mustTokenClient(t, mockToken(), options...)
 			defer client.CloseIdleConnections()
-			client.Host = server.URL
 			_, err := client.Push(context.Background(), mockNotification())
 			if err == nil {
 				t.Fatal("endpoint without ALPN accepted")
@@ -715,16 +710,17 @@ func TestConstructorRejectsNoALPN(t *testing.T) {
 }
 
 func TestConstructorRejectsPlaintext(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("plaintext server received a push")
-	}))
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("plaintext endpoint received request") }))
 	defer server.Close()
-	for _, client := range []*apns.Client{apns.NewClient(mockCert()), apns.NewTokenClient(mockToken())} {
-		client.Host = server.URL
-		defer client.CloseIdleConnections()
-		if _, err := client.Push(context.Background(), mockNotification()); err == nil {
-			t.Error("plaintext endpoint accepted")
-		}
+	for name, construct := range map[string]func() (*apns.Client, error){
+		"certificate": func() (*apns.Client, error) { return apns.NewClient(mockCert(), apns.WithHost(server.URL)) },
+		"token":       func() (*apns.Client, error) { return apns.NewTokenClient(mockToken(), apns.WithHost(server.URL)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if client, err := construct(); err == nil || client != nil {
+				t.Fatalf("constructor = %v, %v, want plaintext rejection", client, err)
+			}
+		})
 	}
 }
 
@@ -739,13 +735,13 @@ func TestClientCustomHTTP(t *testing.T) {
 	for _, tokenAuth := range []bool{false, true} {
 		t.Run(map[bool]string{false: "certificate", true: "token"}[tokenAuth], func(t *testing.T) {
 			options := []apns.ClientOption{apns.WithHost(server.URL), apns.WithHTTPClient(server.Client())}
-			client := apns.NewClient(mockCert(), options...)
+			client := mustClient(t, mockCert(), options...)
 			if tokenAuth {
-				client = apns.NewTokenClient(mockToken(), options...)
+				client = mustTokenClient(t, mockToken(), options...)
 			}
 			defer client.CloseIdleConnections()
 			response, err := client.Push(context.Background(), mockNotification())
-			if err != nil || response == nil || !response.Sent() {
+			if err != nil || response == nil || !response.Success() {
 				t.Fatalf("custom HTTP push = %v, %v", response, err)
 			}
 		})
@@ -756,7 +752,7 @@ func TestClientPreservesTransportErrorDuringCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	transportErr := errors.New("TLS handshake failed")
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := mustTokenClient(t, mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		cancel()
 		return nil, transportErr
 	})}))
@@ -772,7 +768,7 @@ func TestClientPreservesTransportErrorDuringCancellation(t *testing.T) {
 func TestClientPreservesDeadlineErrorWrapper(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := mustTokenClient(t, mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})}))
@@ -800,7 +796,7 @@ func TestResponseMetadataSurvivesDecodeError(t *testing.T) {
 				if err == nil {
 					t.Fatal("malformed response returned no error")
 				}
-				if response == nil || response.StatusCode != status || response.ApnsID != "request-id" || response.ApnsUniqueID != "unique-id" {
+				if response == nil || response.StatusCode != status || response.APNSID != "request-id" || response.APNSUniqueID != "unique-id" {
 					t.Fatalf("response metadata lost: %+v", response)
 				}
 			})
@@ -813,14 +809,14 @@ func TestResponseBodyCannotReplaceHTTPMetadata(t *testing.T) {
 		w.Header().Set("apns-id", "request-id")
 		w.Header().Set("apns-unique-id", "unique-id")
 		w.WriteHeader(http.StatusGone)
-		_, _ = w.Write([]byte(`{"StatusCode":200,"ApnsID":"body-id","ApnsUniqueID":"body-unique-id","reason":"Unregistered","timestamp":1458114061260}`))
+		_, _ = w.Write([]byte(`{"StatusCode":200,"APNSID":"body-id","APNSUniqueID":"body-unique-id","reason":"Unregistered","timestamp":1458114061260}`))
 	}))
 	defer server.Close()
 	response, err := mockClient(server.URL).Push(context.Background(), mockNotification())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusGone || response.ApnsID != "request-id" || response.ApnsUniqueID != "unique-id" {
+	if response.StatusCode != http.StatusGone || response.APNSID != "request-id" || response.APNSUniqueID != "unique-id" {
 		t.Fatalf("body replaced metadata: %+v", response)
 	}
 	if response.Reason != "Unregistered" || response.Timestamp.UnixMilli() != 1458114061260 {
@@ -864,13 +860,13 @@ func TestDeviceTokenValidation(t *testing.T) {
 	}
 }
 
-func TestPushReturnsTokenSigningError(t *testing.T) {
-	client := apns.NewTokenClient(&token.Token{}, apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Error("push reached transport after token signing failed")
+func TestTokenConstructorRejectsMissingKey(t *testing.T) {
+	client, err := apns.NewTokenClient(&token.Token{}, apns.WithHost(apns.HostDevelopment), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("invalid provider reached transport")
 		return nil, errors.New("unexpected request")
 	})}))
-	if _, err := client.Push(context.Background(), mockNotification()); !errors.Is(err, token.ErrAuthKeyNil) {
-		t.Fatalf("push error = %v, want ErrAuthKeyNil", err)
+	if !errors.Is(err, token.ErrAuthKeyNil) || client != nil {
+		t.Fatalf("constructor = %v, %v, want ErrAuthKeyNil", client, err)
 	}
 }
 

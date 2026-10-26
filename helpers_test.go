@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"net/http"
+	"testing"
 
 	apns "github.com/jaakkonakaza/apns2"
 	"github.com/jaakkonakaza/apns2/token"
@@ -23,17 +24,60 @@ func mockNotification() *apns.Notification {
 func mockToken() *token.Token {
 	pubkeyCurve := elliptic.P256()
 	authKey, _ := ecdsa.GenerateKey(pubkeyCurve, rand.Reader)
-	return &token.Token{AuthKey: authKey}
+	provider, err := token.New(authKey, "key", "team")
+	if err != nil {
+		panic(err)
+	}
+	return provider
 }
 
 func mockCert() tls.Certificate {
-	return tls.Certificate{}
+	cert, err := tls.LoadX509KeyPair("certificate/testdata/certificate-valid.pem", "certificate/testdata/certificate-valid.pem")
+	if err != nil {
+		panic(err)
+	}
+	return cert
 }
 
 func mockClient(url string) *apns.Client {
-	return apns.NewClient(mockCert(), apns.WithHost(url), apns.WithHTTPClient(&http.Client{}))
+	client, err := apns.NewClient(mockCert(), apns.WithHost(url), apns.WithHTTPClient(&http.Client{}))
+	if err != nil {
+		panic(err)
+	}
+	return client
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func mustClient(t testing.TB, cert tls.Certificate, options ...apns.ClientOption) *apns.Client {
+	t.Helper()
+	client, err := apns.NewClient(cert, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func mustTokenClient(t testing.TB, provider *token.Token, options ...apns.ClientOption) *apns.Client {
+	t.Helper()
+	client, err := apns.NewTokenClient(provider, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func mustBroadcastTokenClient(t testing.TB, provider *token.Token, endpoints apns.BroadcastEndpoints, options ...apns.ClientOption) *apns.BroadcastClient {
+	t.Helper()
+	client, err := apns.NewBroadcastTokenClient(provider, endpoints, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func broadcastEndpoints(host string) apns.BroadcastEndpoints {
+	return apns.BroadcastEndpoints{Push: host, Channels: host}
+}

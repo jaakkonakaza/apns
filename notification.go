@@ -132,7 +132,7 @@ type Notification struct {
 	// If you don't set this, a new UUID is created by APNs and returned in the
 	// response. Push rejects a value that isn't in this form; uppercase hex
 	// digits are accepted.
-	ApnsID string
+	APNSID string
 
 	// A string which allows multiple notifications with the same collapse
 	// identifier to be displayed to the user as a single notification. The
@@ -160,8 +160,8 @@ type Notification struct {
 	Expiration time.Time
 
 	// The priority of the notification: PriorityHigh (10), PriorityLow (5), or
-	// PriorityPowerSaving (1). If you don't set this, the APNs server will set
-	// the priority to 10.
+	// PriorityPowerSaving (1). Zero selects 5 for background notifications and
+	// otherwise omits the header so APNs applies its default.
 	Priority int
 
 	// The JSON payload, supplied as a JSON string, []byte, or a value to encode.

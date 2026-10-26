@@ -26,14 +26,14 @@ func TestClientRequestTimeoutsAreIndependent(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	tlsOption := apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)
-	short := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), tlsOption, apns.WithTimeout(20*time.Millisecond))
-	long := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), tlsOption, apns.WithTimeout(time.Second))
+	short := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), tlsOption, apns.WithTimeout(20*time.Millisecond))
+	long := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), tlsOption, apns.WithTimeout(time.Second))
 	defer short.CloseIdleConnections()
 	defer long.CloseIdleConnections()
 	shortResult := make(chan error, 1)
 	go func() { _, err := short.Push(context.Background(), mockNotification()); shortResult <- err }()
 	response, err := long.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Sent() {
+	if err != nil || response == nil || !response.Success() {
 		t.Fatalf("long-timeout push = %v, %v", response, err)
 	}
 	if err := <-shortResult; !errors.Is(err, context.DeadlineExceeded) {
@@ -60,12 +60,17 @@ func TestClientDialersAndTLSSettingsAreIndependent(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	short := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(sharedTLS), apns.WithDialTimeout(20*time.Millisecond), apns.WithDialTLSContext(shortDial))
-	long := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(sharedTLS), apns.WithDialTimeout(time.Second))
+	var shortTLS, longTLS *tls.Config
+	short := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(sharedTLS), apns.WithDialTimeout(20*time.Millisecond), apns.WithDialTLSContext(shortDial), apns.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+		shortTLS = base.(*http.Transport).TLSClientConfig
+		return base
+	}))
+	long := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(sharedTLS), apns.WithDialTimeout(time.Second), apns.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+		longTLS = base.(*http.Transport).TLSClientConfig
+		return base
+	}))
 	defer short.CloseIdleConnections()
 	defer long.CloseIdleConnections()
-	shortTLS := apns.HTTPClientForTesting(short).Transport.(*http.Transport).TLSClientConfig
-	longTLS := apns.HTTPClientForTesting(long).Transport.(*http.Transport).TLSClientConfig
 	if shortTLS == longTLS || shortTLS == sharedTLS || longTLS == sharedTLS {
 		t.Fatal("clients share mutable TLS configuration")
 	}
@@ -80,7 +85,7 @@ func TestClientDialersAndTLSSettingsAreIndependent(t *testing.T) {
 		t.Fatal("short client's dialer did not start")
 	}
 	response, err := long.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Sent() {
+	if err != nil || response == nil || !response.Success() {
 		t.Fatalf("independent default dialer = %v, %v", response, err)
 	}
 	if err := <-shortResult; !errors.Is(err, context.DeadlineExceeded) {
@@ -95,17 +100,34 @@ func TestClientDialersAndTLSSettingsAreIndependent(t *testing.T) {
 }
 
 func TestClientManagerForwardsClientOptions(t *testing.T) {
-	manager := apns.NewClientManager(apns.WithHost(apns.HostProduction), apns.WithTimeout(3*time.Second), apns.WithReadIdleTimeout(0))
-	client := manager.Get(mockCert())
-	if client == nil {
-		t.Fatal("manager did not construct a client")
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(200 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	var transport *http.Transport
+	manager, err := apns.NewClientManager(apns.ManagerConfig{Host: server.URL, ClientOptions: []apns.ClientOption{
+		apns.WithTimeout(20 * time.Millisecond), apns.WithReadIdleTimeout(0), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig),
+		apns.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper { transport = base.(*http.Transport); return base }),
+	}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	defer client.CloseIdleConnections()
-	if client.Host != apns.HostProduction || apns.HTTPClientForTesting(client).Timeout != 3*time.Second {
-		t.Fatalf("manager did not apply client options: %+v", client)
+	client, err := manager.Get(mockCert())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if apns.HTTPClientForTesting(client).Transport.(*http.Transport).HTTP2.SendPingTimeout != 0 {
-		t.Fatal("manager did not disable idle pings")
+	defer manager.CloseIdleConnections()
+	if client.Host() != server.URL || transport == nil || transport.HTTP2.SendPingTimeout != 0 {
+		t.Fatalf("manager did not apply transport options: client=%v transport=%v", client, transport)
+	}
+	if _, err := client.Push(context.Background(), mockNotification()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("manager client timeout = %v, want deadline exceeded", err)
 	}
 }
 
@@ -120,7 +142,7 @@ func TestTLSConfigVerificationCannotDisableHTTP2(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	var verified atomic.Int32
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(&tls.Config{
+	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(&tls.Config{
 		RootCAs:          server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs,
 		VerifyConnection: func(tls.ConnectionState) error { verified.Add(1); return nil },
 	}))
@@ -134,10 +156,8 @@ func TestTLSConfigVerificationCannotDisableHTTP2(t *testing.T) {
 }
 
 func TestClientManagerRejectsSharedHTTPClient(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("manager accepted a shared custom HTTP client")
-		}
-	}()
-	apns.NewClientManager(apns.WithHTTPClient(&http.Client{}))
+	manager, err := apns.NewClientManager(apns.ManagerConfig{Host: apns.HostDevelopment, ClientOptions: []apns.ClientOption{apns.WithHTTPClient(&http.Client{})}})
+	if err == nil || manager != nil {
+		t.Fatalf("constructor = %v, %v, want shared-client error", manager, err)
+	}
 }

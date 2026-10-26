@@ -94,7 +94,7 @@ func TestExpiresBeforeAnHour(t *testing.T) {
 func TestBearerRefresh(t *testing.T) {
 	authKey, _ := AuthKeyFromFile("testdata/authkey-valid.p8")
 	token := &Token{
-		AuthKey: authKey,
+		authKey: authKey,
 	}
 	if _, err := token.Bearer(); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestBearerWithInvalidAuthKey(t *testing.T) {
 	pubkeyCurve := elliptic.P521()
 	privatekey, _ := ecdsa.GenerateKey(pubkeyCurve, rand.Reader)
 	token := &Token{
-		AuthKey: privatekey,
+		authKey: privatekey,
 	}
 	_, err := token.Bearer()
 	if got := err; got == nil {
@@ -130,9 +130,8 @@ func TestBearerSignsToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &Token{
-		AuthKey: key,
-		KeyID:   "key\"\\\n日本語",
-		TeamID:  "team\"\\\n日本語",
+		authKey:  key,
+		identity: Identity{KeyID: "key\"\\\n日本語", TeamID: "team\"\\\n日本語"},
 	}
 	before := time.Now().Unix()
 	if _, err := provider.Bearer(); err != nil {
@@ -160,7 +159,7 @@ func TestBearerSignsToken(t *testing.T) {
 	if err := json.Unmarshal(decode(parts[0]), &header); err != nil {
 		t.Fatal(err)
 	}
-	if len(header) != 2 || header["alg"] != "ES256" || header["kid"] != provider.KeyID {
+	if len(header) != 2 || header["alg"] != "ES256" || header["kid"] != provider.identity.KeyID {
 		t.Errorf("unexpected JWT header: %#v", header)
 	}
 	var claims struct {
@@ -170,7 +169,7 @@ func TestBearerSignsToken(t *testing.T) {
 	if err := json.Unmarshal(decode(parts[1]), &claims); err != nil {
 		t.Fatal(err)
 	}
-	if claims.Issuer != provider.TeamID || claims.IssuedAt != provider.issuedAt {
+	if claims.Issuer != provider.identity.TeamID || claims.IssuedAt != provider.issuedAt {
 		t.Errorf("unexpected JWT claims: %#v", claims)
 	}
 	signature := decode(parts[2])
@@ -197,7 +196,7 @@ func TestRestoreReusesFreshBearer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &Token{AuthKey: key, KeyID: "KEY", TeamID: "TEAM"}
+	provider := &Token{authKey: key, identity: Identity{KeyID: "KEY", TeamID: "TEAM"}}
 	if !provider.IssuedAt().IsZero() {
 		t.Fatal("new token reports an issue time")
 	}
@@ -216,7 +215,7 @@ func TestRestoreReplacesExpiredBearer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &Token{AuthKey: key, KeyID: "KEY", TeamID: "TEAM"}
+	provider := &Token{authKey: key, identity: Identity{KeyID: "KEY", TeamID: "TEAM"}}
 	provider.Restore("stale.bearer.value", time.Now().Add(-TokenTimeout))
 	bearer, err := provider.Bearer()
 	if err != nil || bearer == "stale.bearer.value" {
@@ -245,7 +244,7 @@ func TestInvalidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh := &Token{AuthKey: key}
+	fresh := &Token{authKey: key}
 	bearer, err := fresh.Bearer()
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +254,7 @@ func TestInvalidate(t *testing.T) {
 		t.Error("Invalidate dropped a token signed less than 20 minutes ago")
 	}
 
-	old := &Token{AuthKey: key, bearer: "old", issuedAt: time.Now().Add(-25 * time.Minute).Unix()}
+	old := &Token{authKey: key, bearer: "old", issuedAt: time.Now().Add(-25 * time.Minute).Unix()}
 	old.Invalidate("other")
 	if old.bearer != "old" {
 		t.Error("Invalidate dropped a bearer that wasn't the rejected one")
@@ -265,7 +264,7 @@ func TestInvalidate(t *testing.T) {
 		t.Error("Invalidate kept a rejected token older than 20 minutes")
 	}
 
-	restored := &Token{AuthKey: key}
+	restored := &Token{authKey: key}
 	restored.Restore("restored", time.Now())
 	restored.Invalidate("restored")
 	if restored.bearer != "" {

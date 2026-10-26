@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// StatusSent is a 200 response.
-const StatusSent = http.StatusOK
+// StatusAccepted is a 200 response.
+const StatusAccepted = http.StatusOK
 
 // The possible Reason error codes returned from APNs. See
 // https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns
@@ -122,6 +122,9 @@ const (
 // notification was accepted or rejected and (if applicable) the metadata
 // surrounding the rejection.
 type Response struct {
+	// Header contains the response headers, including any retry scheduling metadata.
+	Header http.Header
+
 	// The HTTP status code returned by APNs.
 	// A 200 value indicates that APNs accepted the notification. It does not
 	// confirm delivery to the device.
@@ -134,9 +137,9 @@ type Response struct {
 	// If the notification was accepted, this value will be "".
 	Reason string
 
-	// The APNs ApnsID value from the Notification. If you didn't set an ApnsID on the
+	// The APNs APNSID value from the Notification. If you didn't set an APNSID on the
 	// Notification, this will be a new unique UUID which has been created by APNs.
-	ApnsID string
+	APNSID string
 
 	// If the value of StatusCode is 410, this is the last time at which APNs
 	// confirmed that the device token was no longer valid for the topic.
@@ -145,11 +148,10 @@ type Response struct {
 	// An identifier that is only available in the Development environment for
 	// device notifications. Use this to query Delivery Log information for the
 	// corresponding notification in Push Notifications Console.
-	ApnsUniqueID string
+	APNSUniqueID string
 }
 
-// Sent returns whether APNs accepted the notification, without confirming delivery.
-// This is the same as checking if the StatusCode == 200.
-func (c *Response) Sent() bool {
-	return c.StatusCode == StatusSent
+// Success reports whether APNs accepted the request, without confirming delivery.
+func (c *Response) Success() bool {
+	return c.StatusCode >= 200 && c.StatusCode < 300
 }

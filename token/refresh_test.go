@@ -45,7 +45,7 @@ func TestRefreshReturnsSigningError(t *testing.T) {
 		{"wrong curve", wrongCurve, ErrAuthKeyCurve},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := &Token{AuthKey: tc.key, issuedAt: 1, bearer: "expired"}
+			provider := &Token{authKey: tc.key, issuedAt: 1, bearer: "expired"}
 			bearer, err := provider.Bearer()
 			if bearer != "" || !errors.Is(err, tc.want) {
 				t.Fatalf("refresh = %q, %v; want empty bearer, %v", bearer, err, tc.want)
@@ -62,7 +62,7 @@ func TestRefreshGeneratesMissingBearer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &Token{AuthKey: key, issuedAt: time.Now().Unix()}
+	provider := &Token{authKey: key, issuedAt: time.Now().Unix()}
 	bearer, err := provider.Bearer()
 	if err != nil || bearer == "" {
 		t.Fatalf("refresh = %q, %v", bearer, err)
@@ -78,7 +78,7 @@ func TestBearerRefreshesExpiredToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &Token{AuthKey: key, issuedAt: time.Now().Add(-TokenTimeout).Unix(), bearer: "expired"}
+	provider := &Token{authKey: key, issuedAt: time.Now().Add(-TokenTimeout).Unix(), bearer: "expired"}
 	bearer, err := provider.Bearer()
 	if err != nil || bearer == "" || bearer == "expired" {
 		t.Fatalf("Bearer() = %q, %v", bearer, err)
@@ -97,7 +97,7 @@ func TestConcurrentTokenMethods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &Token{AuthKey: key, KeyID: "key", TeamID: "team"}
+	provider := &Token{authKey: key, identity: Identity{KeyID: "key", TeamID: "team"}}
 	var wg sync.WaitGroup
 	for range 12 {
 		wg.Go(func() {

@@ -1,200 +1,96 @@
 package apns2_test
 
 import (
-	"bytes"
 	"crypto/tls"
-	"reflect"
-	"sync"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/certificate"
 )
 
-func TestNewClientManager(t *testing.T) {
-	manager := apns2.NewClientManager()
-	if got, want := 64, manager.MaxSize; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-	if got, want := time.Duration(0), manager.MaxAge; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestClientManagerGetWithoutNew(t *testing.T) {
-	manager := apns2.ClientManager{
-		MaxSize: 32,
-		MaxAge:  5 * time.Minute,
-		Factory: func(certificate tls.Certificate) *apns2.Client { return apns2.NewClient(certificate) },
-	}
-
-	c1 := manager.Get(mockCert())
-	c2 := manager.Get(mockCert())
-	v1 := reflect.ValueOf(c1)
-	v2 := reflect.ValueOf(c2)
-	if got := c1; got == nil {
-		t.Error("unexpected nil")
-	}
-	if got, want := v2.Pointer(), v1.Pointer(); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
+func TestClientManagerConfiguration(t *testing.T) {
+	for _, config := range []apns2.ManagerConfig{
+		{},
+		{Host: "not-a-url"},
+		{Host: apns2.HostDevelopment, MaxSize: -1},
+		{Host: apns2.HostDevelopment, MaxAge: -time.Second},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{nil}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHTTPClient(&http.Client{})}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHost(apns2.HostProduction)}},
+	} {
+		if manager, err := apns2.NewClientManager(config); err == nil || manager != nil {
+			t.Fatalf("invalid config returned %v, %v", manager, err)
+		}
 	}
 }
 
-func TestClientManagerAddWithoutNew(t *testing.T) {
-	wg := sync.WaitGroup{}
-
-	manager := apns2.ClientManager{
-		MaxSize: 1,
-		MaxAge:  5 * time.Minute,
-		Factory: func(certificate tls.Certificate) *apns2.Client { return apns2.NewClient(certificate) },
+func TestClientManagerCachesCertificate(t *testing.T) {
+	manager, err := apns2.NewClientManager(apns2.ManagerConfig{Host: apns2.HostDevelopment, MaxSize: 64})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer manager.CloseIdleConnections()
+	first, err := manager.Get(mockCert())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Get(mockCert())
+	if err != nil || second != first || manager.Len() != 1 || manager.Host() != apns2.HostDevelopment {
+		t.Fatalf("cached lookup = %p, %v, length %d", second, err, manager.Len())
+	}
+	if !manager.Remove(mockCert()) || manager.Len() != 0 {
+		t.Fatal("certificate was not removed")
+	}
+}
 
-	for range 2 {
-		wg.Go(func() {
-			if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
+func TestClientManagerConfigurationIsCaptured(t *testing.T) {
+	config := apns2.ManagerConfig{Host: apns2.HostDevelopment}
+	manager, err := apns2.NewClientManager(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.CloseIdleConnections()
+	config.Host = apns2.HostProduction
+	client, err := manager.Get(mockCert())
+	if err != nil || client.Host() != apns2.HostDevelopment {
+		t.Fatalf("captured config client = %v, %v", client, err)
+	}
+}
+
+func TestClientManagerFactoryFailures(t *testing.T) {
+	failure := errors.New("load certificate")
+	for _, test := range []struct {
+		name    string
+		factory func(tls.Certificate) (*apns2.Client, error)
+		want    error
+	}{
+		{"factory error", func(tls.Certificate) (*apns2.Client, error) { return nil, failure }, failure},
+		{"nil client", func(tls.Certificate) (*apns2.Client, error) { return nil, nil }, apns2.ErrClientUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, err := apns2.NewClientManager(apns2.ManagerConfig{Host: apns2.HostDevelopment, Factory: test.factory})
+			if err != nil {
 				t.Fatal(err)
 			}
-			if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
-				t.Errorf("got %#v, want %#v", got, want)
+			if client, err := manager.Get(mockCert()); client != nil || !errors.Is(err, test.want) {
+				t.Fatalf("failed lookup = %v, %v", client, err)
+			}
+			if manager.Len() != 0 {
+				t.Fatal("failed construction was cached")
 			}
 		})
 	}
-	wg.Wait()
 }
 
-func TestClientManagerLenWithoutNew(t *testing.T) {
-	manager := apns2.ClientManager{
-		MaxSize: 32,
-		MaxAge:  5 * time.Minute,
-		Factory: func(certificate tls.Certificate) *apns2.Client { return apns2.NewClient(certificate) },
+func TestClientManagerZeroValue(t *testing.T) {
+	var manager apns2.ClientManager
+	manager.CloseIdleConnections()
+	if manager.Len() != 0 || manager.Remove(mockCert()) {
+		t.Fatal("zero manager contains a client")
 	}
-
-	if got, want := manager.Len(), 0; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestClientManagerGetDefaultOptions(t *testing.T) {
-	manager := apns2.NewClientManager()
-	c1 := manager.Get(mockCert())
-	c2 := manager.Get(mockCert())
-	v1 := reflect.ValueOf(c1)
-	v2 := reflect.ValueOf(c2)
-	if got := c1; got == nil {
-		t.Error("unexpected nil")
-	}
-	if got, want := v2.Pointer(), v1.Pointer(); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestClientManagerGetNilClientFactory(t *testing.T) {
-	manager := apns2.NewClientManager()
-	manager.Factory = func(certificate tls.Certificate) *apns2.Client {
-		return nil
-	}
-	c1 := manager.Get(mockCert())
-	c2 := manager.Get(mockCert())
-	if got := c1; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-	if got := c2; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-	if got, want := manager.Len(), 0; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestClientManagerGetMaxAgeExpiration(t *testing.T) {
-	manager := apns2.NewClientManager()
-	manager.MaxAge = time.Nanosecond
-	c1 := manager.Get(mockCert())
-	time.Sleep(time.Microsecond)
-	c2 := manager.Get(mockCert())
-	v1 := reflect.ValueOf(c1)
-	v2 := reflect.ValueOf(c2)
-	if got := c1; got == nil {
-		t.Error("unexpected nil")
-	}
-	if got, want := v2.Pointer(), v1.Pointer(); reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want different from %#v", got, want)
-	}
-	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestClientManagerGetMaxAgeExpirationWithNilFactory(t *testing.T) {
-	manager := apns2.NewClientManager()
-	manager.Factory = func(certificate tls.Certificate) *apns2.Client {
-		return nil
-	}
-	manager.MaxAge = time.Nanosecond
-	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
-		t.Fatal(err)
-	}
-	c1 := manager.Get(mockCert())
-	time.Sleep(time.Microsecond)
-	c2 := manager.Get(mockCert())
-	if got := c1; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-	if got := c2; got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-	if got, want := manager.Len(), 0; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestClientManagerGetMaxSizeExceeded(t *testing.T) {
-	manager := apns2.NewClientManager()
-	manager.MaxSize = 1
-	cert1 := mockCert()
-	_ = manager.Get(cert1)
-	cert2, _ := certificate.FromP12File("certificate/testdata/certificate-valid.p12", "")
-	_ = manager.Get(cert2)
-	cert3, _ := certificate.FromP12File("certificate/testdata/certificate-valid-encrypted.p12", "password")
-	c := manager.Get(cert3)
-	if !bytes.Equal(cert3.Certificate[0], c.Certificate.Certificate[0]) {
-		t.Error("bytes.Equal(cert3.Certificate[0], c.Certificate.Certificate[0]) = false, want true")
-	}
-	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
-	}
-}
-
-func TestClientManagerAdd(t *testing.T) {
-	fn := func(certificate tls.Certificate) *apns2.Client {
-		t.Fatal("factory should not have been called")
-		return nil
-	}
-
-	manager := apns2.NewClientManager()
-	manager.Factory = fn
-	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
-		t.Fatal(err)
-	}
-	manager.Get(mockCert())
-}
-
-func TestClientManagerAddTwice(t *testing.T) {
-	manager := apns2.NewClientManager()
-	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Add(apns2.NewClient(mockCert())); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := manager.Len(), 1; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
+	if client, err := manager.Get(mockCert()); client != nil || !errors.Is(err, apns2.ErrClientUnavailable) {
+		t.Fatalf("zero manager lookup = %v, %v", client, err)
 	}
 }

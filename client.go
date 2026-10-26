@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jaakkonakaza/apns2/token"
@@ -25,56 +27,86 @@ const (
 	HostProduction  = "https://api.push.apple.com"
 )
 
-// Client represents a connection with the APNs. Certificate records the
-// certificate passed to NewClient, which ClientManager uses as its cache key.
-// Changing it after construction does not change the TLS identity.
+// Client sends notifications using a fixed endpoint and authentication identity.
+// Reuse it across pushes so its HTTP/2 connections stay open.
 type Client struct {
-	Host        string
-	Certificate tls.Certificate
-	// Token is the provider signing identity. Configure it before use and reuse
-	// it across pushes. Create a new client when changing teams, environments,
-	// or incompatible key scopes because APNs binds identity to the connection,
-	// and after adding topics, transferring apps, or revoking credentials.
-	Token      *token.Token
-	httpClient *http.Client
+	host           string
+	certificate    tls.Certificate
+	token          *token.Token
+	httpClient     *http.Client
+	ownedTransport *http.Transport
 }
 
-// NewClient returns a certificate-authenticated client. By default it uses an
-// HTTP client configured for APNs HTTP/2. It connects when Push is first called.
-//
-// Reuse the client so its connections to APNs stay open across notifications,
-// for hours or days. APNs may treat repeatedly opening and closing connections
-// as a denial-of-service attack and temporarily block your server. See
-// https://developer.apple.com/documentation/usernotifications/establishing-a-connection-to-apns
-//
-// If your use case involves multiple long-lived connections, consider using
-// the ClientManager, which manages clients for you.
-//
-// With WithHTTPClient, the supplied client's TLS identity is used instead of
-// certificate.
-func NewClient(certificate tls.Certificate, options ...ClientOption) *Client {
-	client := newClient(&tls.Config{Certificates: []tls.Certificate{certificate}}, options...)
-	client.Certificate = certificate
-	return client
+// Host returns the endpoint selected when the client was constructed.
+func (c *Client) Host() string { return c.host }
+
+// NewClient constructs a certificate-authenticated client without connecting.
+// WithHTTPClient uses the supplied client's TLS identity instead of certificate.
+func NewClient(certificate tls.Certificate, options ...ClientOption) (*Client, error) {
+	config, err := clientConfigForOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	return newCertificateClient(certificate, config)
 }
 
-// NewTokenClient returns a token-authenticated client. By default it uses an
-// HTTP client configured for APNs HTTP/2. It connects when Push is first called.
-//
-// Reuse the client so its connections to APNs stay open across notifications,
-// for hours or days. APNs may treat repeatedly opening and closing connections
-// as a denial-of-service attack and temporarily block your server. See
-// https://developer.apple.com/documentation/usernotifications/establishing-a-connection-to-apns
-func NewTokenClient(token *token.Token, options ...ClientOption) *Client {
-	client := newClient(&tls.Config{}, options...)
-	client.Token = token
-	return client
+func newCertificateClient(certificate tls.Certificate, config clientConfig) (*Client, error) {
+	if config.httpClient == nil && (len(certificate.Certificate) == 0 || certificate.PrivateKey == nil) {
+		return nil, errors.New("apns2: certificate and private key are required")
+	}
+	client, err := newClient(&tls.Config{Certificates: []tls.Certificate{certificate}}, config)
+	if err != nil {
+		return nil, err
+	}
+	client.certificate = certificate
+	return client, nil
 }
 
-func newClient(tlsConfig *tls.Config, options ...ClientOption) *Client {
+// NewTokenClient constructs a token-authenticated client without connecting.
+// Share one provider token per signing identity and reuse the returned client.
+func NewTokenClient(provider *token.Token, options ...ClientOption) (*Client, error) {
+	config, err := clientConfigForOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	return newTokenClient(provider, config)
+}
+
+func newTokenClient(provider *token.Token, config clientConfig) (*Client, error) {
+	if provider == nil {
+		return nil, token.ErrAuthKeyNil
+	}
+	if _, err := provider.Identity(); err != nil {
+		return nil, err
+	}
+	client, err := newClient(&tls.Config{}, config)
+	if err != nil {
+		return nil, err
+	}
+	client.token = provider
+	return client, nil
+}
+
+func clientConfigForOptions(options []ClientOption) (clientConfig, error) {
 	config := defaultClientConfig()
 	for _, option := range options {
+		if option == nil {
+			return clientConfig{}, errors.New("apns2: client option is nil")
+		}
 		option(&config)
+	}
+	return config, nil
+}
+
+func newClient(tlsConfig *tls.Config, config clientConfig) (*Client, error) {
+	if err := validateHost(config.host, config.httpClient != nil); err != nil {
+		return nil, err
+	}
+	if config.httpClient == nil && (config.timeout < 0 || config.dialTimeout < 0 || config.readIdleTimeout < 0 || config.idleConnTimeout < 0) {
+		return nil, errors.New("apns2: timeouts must not be negative")
+	}
+	if config.httpClient != nil && config.transportWrapper != nil {
+		return nil, errors.New("apns2: WithTransportWrapper cannot be combined with WithHTTPClient")
 	}
 	if config.tlsConfig != nil {
 		supplied := config.tlsConfig.Clone()
@@ -84,15 +116,43 @@ func newClient(tlsConfig *tls.Config, options ...ClientOption) *Client {
 		}
 		tlsConfig = supplied
 	}
-	httpClient := config.httpClient
-	if httpClient == nil {
-		httpClient = &http.Client{
-			Transport:     newTransport(tlsConfig, config),
-			Timeout:       config.timeout,
-			CheckRedirect: noRedirects,
-		}
+	if config.httpClient == nil && tlsConfig.MaxVersion != 0 && (tlsConfig.MaxVersion < tls.VersionTLS12 || tlsConfig.MinVersion > tlsConfig.MaxVersion) {
+		return nil, errors.New("apns2: incompatible TLS version limits")
 	}
-	return &Client{httpClient: httpClient, Host: config.host}
+	client := &Client{host: strings.TrimRight(config.host, "/"), httpClient: config.httpClient}
+	if client.httpClient == nil {
+		transport := newTransport(tlsConfig, config)
+		var roundTripper http.RoundTripper = transport
+		if config.transportWrapper != nil {
+			roundTripper = config.transportWrapper(transport)
+			if roundTripper == nil {
+				return nil, errors.New("apns2: transport wrapper returned nil")
+			}
+		}
+		client.ownedTransport = transport
+		client.httpClient = &http.Client{Transport: roundTripper, Timeout: config.timeout, CheckRedirect: noRedirects}
+	}
+	return client, nil
+}
+
+func validateHost(host string, allowHTTP bool) error {
+	if host == "" {
+		return errors.New("apns2: host is required")
+	}
+	endpoint, err := url.Parse(host)
+	if err != nil {
+		return fmt.Errorf("apns2: invalid host: %w", err)
+	}
+	if endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || strings.Contains(host, "#") || endpoint.Fragment != "" || endpoint.Path != "" && endpoint.Path != "/" || endpoint.Opaque != "" {
+		return errors.New("apns2: host must be an absolute endpoint without credentials, path, query or fragment")
+	}
+	if endpoint.Scheme != "https" {
+		if endpoint.Scheme == "http" && allowHTTP {
+			return nil
+		}
+		return ErrHTTP2Required
+	}
+	return nil
 }
 
 // maxResponseBytes bounds how much of an APNs response body Push reads.
@@ -121,27 +181,31 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	if _, err := hex.DecodeString(n.DeviceToken); err != nil {
 		return nil, fmt.Errorf("apns2: invalid device token: %w", err)
 	}
-	if c.Host == "" {
-		return nil, errors.New("apns2: host is not set; use WithHost(HostProduction) or WithHost(HostDevelopment)")
-	}
 	if n.PushType == "" {
 		return nil, errors.New("apns2: push type is empty")
 	}
-	if n.Topic == "" && c.Token != nil {
+	if n.Topic == "" && c.token != nil {
 		return nil, errors.New("apns2: topic is required with token authentication")
 	}
 	if len(n.CollapseID) > maxCollapseIDBytes {
 		return nil, fmt.Errorf("apns2: collapse ID exceeds %d bytes", maxCollapseIDBytes)
 	}
-	if n.ApnsID != "" && !canonicalUUID(n.ApnsID) {
+	if n.APNSID != "" && !canonicalUUID(n.APNSID) {
 		return nil, errors.New("apns2: apns-id must be a canonical 8-4-4-4-12 UUID")
 	}
-	payload, err := json.Marshal(n)
+	if n.PushType == PushTypeBackground && n.Priority != 0 && n.Priority != PriorityLow {
+		return nil, errors.New("apns2: background notifications require priority 5")
+	}
+	limit := 4096
+	if n.PushType == PushTypeVOIP {
+		limit = 5120
+	}
+	payload, err := marshalPayload(n.Payload, limit)
 	if err != nil {
 		return nil, err
 	}
 
-	requestURL := c.Host + "/3/device/" + n.DeviceToken
+	requestURL := c.host + "/3/device/" + n.DeviceToken
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -150,8 +214,8 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	request = prepareRequest(request)
 
 	var bearer string
-	if c.Token != nil {
-		if bearer, err = c.Token.Bearer(); err != nil {
+	if c.token != nil {
+		if bearer, err = c.token.Bearer(); err != nil {
 			return nil, err
 		}
 		request.Header.Set("authorization", "bearer "+bearer)
@@ -170,8 +234,9 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 
 	r := &Response{}
 	r.StatusCode = response.StatusCode
-	r.ApnsID = response.Header.Get("apns-id")
-	r.ApnsUniqueID = response.Header.Get("apns-unique-id")
+	r.Header = response.Header.Clone()
+	r.APNSID = response.Header.Get("apns-id")
+	r.APNSUniqueID = response.Header.Get("apns-unique-id")
 
 	data, err := readResponseBody(response.Body)
 	if err != nil {
@@ -191,8 +256,8 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	if body.Timestamp != nil {
 		r.Timestamp = time.UnixMilli(*body.Timestamp)
 	}
-	if c.Token != nil && (r.Reason == ReasonExpiredProviderToken || r.Reason == ReasonInvalidProviderToken) {
-		c.Token.Invalidate(bearer)
+	if c.token != nil && (r.Reason == ReasonExpiredProviderToken || r.Reason == ReasonInvalidProviderToken) {
+		c.token.Invalidate(bearer)
 	}
 	return r, nil
 }
@@ -201,6 +266,10 @@ func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 // connected from previous requests but are now sitting idle. It will not
 // interrupt any connections currently in use.
 func (c *Client) CloseIdleConnections() {
+	if c.ownedTransport != nil {
+		c.ownedTransport.CloseIdleConnections()
+		return
+	}
 	c.httpClient.CloseIdleConnections()
 }
 
@@ -209,14 +278,18 @@ func setHeaders(r *http.Request, n *Notification) {
 	if n.Topic != "" {
 		r.Header.Set("apns-topic", n.Topic)
 	}
-	if n.ApnsID != "" {
-		r.Header.Set("apns-id", n.ApnsID)
+	if n.APNSID != "" {
+		r.Header.Set("apns-id", n.APNSID)
 	}
 	if n.CollapseID != "" {
 		r.Header.Set("apns-collapse-id", n.CollapseID)
 	}
-	if n.Priority > 0 {
-		r.Header.Set("apns-priority", strconv.Itoa(n.Priority))
+	priority := n.Priority
+	if n.PushType == PushTypeBackground && priority == 0 {
+		priority = PriorityLow
+	}
+	if priority > 0 {
+		r.Header.Set("apns-priority", strconv.Itoa(priority))
 	}
 	if !n.Expiration.IsZero() {
 		r.Header.Set("apns-expiration", strconv.FormatInt(max(0, n.Expiration.Unix()), 10))
@@ -259,6 +332,21 @@ func readResponseBodyLimit(body io.Reader, limit int64) ([]byte, error) {
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("apns2: response body exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
+func marshalPayload(value any, limit int) ([]byte, error) {
+	data, err := json.Marshal(&Notification{Payload: value})
+	if err != nil {
+		return nil, err
+	}
+	object := bytes.TrimSpace(data)
+	if len(object) == 0 || object[0] != '{' {
+		return nil, errors.New("apns2: payload must be a JSON object")
+	}
+	if len(data) > limit {
+		return nil, fmt.Errorf("apns2: payload exceeds %d bytes", limit)
 	}
 	return data, nil
 }

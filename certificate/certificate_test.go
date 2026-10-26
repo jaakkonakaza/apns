@@ -65,8 +65,8 @@ func TestBadPasswordP12File(t *testing.T) {
 
 // PEM
 
-func TestValidCertificateFromPemFile(t *testing.T) {
-	cer, err := certificate.FromPemFile("testdata/certificate-valid.pem")
+func TestValidCertificateFromPEMFile(t *testing.T) {
+	cer, err := certificate.FromPEMFile("testdata/certificate-valid.pem")
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
@@ -75,9 +75,9 @@ func TestValidCertificateFromPemFile(t *testing.T) {
 	}
 }
 
-func TestValidCertificateFromPemBytes(t *testing.T) {
+func TestValidCertificateFromPEMBytes(t *testing.T) {
 	bytes, _ := os.ReadFile("testdata/certificate-valid.pem")
-	cer, err := certificate.FromPemBytes(bytes)
+	cer, err := certificate.FromPEMBytes(bytes)
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
@@ -86,8 +86,8 @@ func TestValidCertificateFromPemBytes(t *testing.T) {
 	}
 }
 
-func TestValidCertificateFromPemFileWithPKCS8PrivateKey(t *testing.T) {
-	cer, err := certificate.FromPemFile("testdata/certificate-valid-pkcs8.pem")
+func TestValidCertificateFromPEMFileWithPKCS8PrivateKey(t *testing.T) {
+	cer, err := certificate.FromPEMFile("testdata/certificate-valid-pkcs8.pem")
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
@@ -96,9 +96,9 @@ func TestValidCertificateFromPemFileWithPKCS8PrivateKey(t *testing.T) {
 	}
 }
 
-func TestValidCertificateFromPemBytesWithPKCS8PrivateKey(t *testing.T) {
+func TestValidCertificateFromPEMBytesWithPKCS8PrivateKey(t *testing.T) {
 	bytes, _ := os.ReadFile("testdata/certificate-valid-pkcs8.pem")
-	cer, err := certificate.FromPemBytes(bytes)
+	cer, err := certificate.FromPEMBytes(bytes)
 	if got := err; got != nil {
 		t.Errorf("got %v, want nil", got)
 	}
@@ -107,8 +107,8 @@ func TestValidCertificateFromPemBytesWithPKCS8PrivateKey(t *testing.T) {
 	}
 }
 
-func TestUnsupportedEncryptedCertificateFromPemFile(t *testing.T) {
-	cer, err := certificate.FromPemFile("testdata/certificate-legacy-encrypted-unsupported.pem")
+func TestUnsupportedEncryptedCertificateFromPEMFile(t *testing.T) {
+	cer, err := certificate.FromPEMFile("testdata/certificate-legacy-encrypted-unsupported.pem")
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -118,7 +118,7 @@ func TestUnsupportedEncryptedCertificateFromPemFile(t *testing.T) {
 }
 
 func TestNoSuchFilePemFile(t *testing.T) {
-	cer, err := certificate.FromPemFile("")
+	cer, err := certificate.FromPEMFile("")
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -128,7 +128,7 @@ func TestNoSuchFilePemFile(t *testing.T) {
 }
 
 func TestBadKeyPemFile(t *testing.T) {
-	cer, err := certificate.FromPemFile("testdata/certificate-bad-key.pem")
+	cer, err := certificate.FromPEMFile("testdata/certificate-bad-key.pem")
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -138,7 +138,7 @@ func TestBadKeyPemFile(t *testing.T) {
 }
 
 func TestNoKeyPemFile(t *testing.T) {
-	cer, err := certificate.FromPemFile("testdata/certificate-no-key.pem")
+	cer, err := certificate.FromPEMFile("testdata/certificate-no-key.pem")
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -148,7 +148,7 @@ func TestNoKeyPemFile(t *testing.T) {
 }
 
 func TestNoCertificatePemFile(t *testing.T) {
-	cer, err := certificate.FromPemFile("testdata/certificate-no-certificate.pem")
+	cer, err := certificate.FromPEMFile("testdata/certificate-no-certificate.pem")
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}

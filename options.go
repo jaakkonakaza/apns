@@ -13,16 +13,18 @@ import (
 type ClientOption func(*clientConfig)
 
 type clientConfig struct {
-	host            string
-	httpClient      *http.Client
-	idleConnTimeout time.Duration
-	timeout         time.Duration
-	dialTimeout     time.Duration
-	readIdleTimeout time.Duration
-	tcpKeepAlive    time.Duration
-	tlsConfig       *tls.Config
-	proxy           func(*http.Request) (*url.URL, error)
-	dialTLS         func(context.Context, string, string, *tls.Config) (net.Conn, error)
+	host             string
+	hostSet          bool
+	httpClient       *http.Client
+	transportWrapper func(http.RoundTripper) http.RoundTripper
+	idleConnTimeout  time.Duration
+	timeout          time.Duration
+	dialTimeout      time.Duration
+	readIdleTimeout  time.Duration
+	tcpKeepAlive     time.Duration
+	tlsConfig        *tls.Config
+	proxy            func(*http.Request) (*url.URL, error)
+	dialTLS          func(context.Context, string, string, *tls.Config) (net.Conn, error)
 }
 
 func defaultClientConfig() clientConfig {
@@ -35,10 +37,12 @@ func defaultClientConfig() clientConfig {
 }
 
 // WithHost sets the APNs endpoint, HostProduction or HostDevelopment. There is
-// no default: Push fails until a host is set, so a client can't silently send
-// to the wrong environment.
+// no default. Construction fails until a valid endpoint is supplied.
 func WithHost(host string) ClientOption {
-	return func(config *clientConfig) { config.host = host }
+	return func(config *clientConfig) {
+		config.host = host
+		config.hostSet = true
+	}
 }
 
 // WithTimeout sets the time limit for a complete push, including reading its response.
@@ -106,4 +110,13 @@ func WithHTTPClient(client *http.Client) ClientOption {
 // The default is zero, which leaves idle connections open.
 func WithIdleConnTimeout(timeout time.Duration) ClientOption {
 	return func(config *clientConfig) { config.idleConnTimeout = timeout }
+}
+
+// WithTransportWrapper decorates the default transport for tracing or instrumentation.
+// The wrapper must preserve request contexts. The client retains ownership of
+// connection cleanup, even when the wrapper has no CloseIdleConnections method.
+// Use httptrace.WithClientTrace for request-level trace hooks without a wrapper.
+// It cannot be combined with WithHTTPClient.
+func WithTransportWrapper(wrap func(http.RoundTripper) http.RoundTripper) ClientOption {
+	return func(config *clientConfig) { config.transportWrapper = wrap }
 }

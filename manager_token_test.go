@@ -15,68 +15,83 @@ import (
 	"github.com/jaakkonakaza/apns2/token"
 )
 
-func managerTestToken(t *testing.T) *token.Token {
+func managerSigningKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &token.Token{AuthKey: key, TeamID: "team", KeyID: "key"}
+	return key
+}
+
+func managerTokenWithKey(t *testing.T, key *ecdsa.PrivateKey, keyID, teamID string) *token.Token {
+	t.Helper()
+	provider, err := token.New(key, keyID, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provider
+}
+
+func managerTestToken(t *testing.T) *token.Token {
+	t.Helper()
+	return managerTokenWithKey(t, managerSigningKey(t), "key", "team")
 }
 
 func TestClientManagerTokenIdentityAndHost(t *testing.T) {
-	provider := managerTestToken(t)
-	manager := NewClientManager(WithHost(HostDevelopment))
+	key := managerSigningKey(t)
+	provider := managerTokenWithKey(t, key, "key", "team")
+	manager := managerForTest(t, ManagerConfig{})
 	first, err := manager.GetByToken(provider)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.CloseIdleConnections()
-	if first.Host != HostDevelopment || first.Token != provider {
-		t.Fatal("token factory did not apply host and identity")
+	if first.Host() != HostDevelopment || first.token != provider {
+		t.Fatal("token factory changed host or identity")
 	}
 	if _, err := provider.Bearer(); err != nil {
 		t.Fatal(err)
 	}
-	copied := &token.Token{AuthKey: provider.AuthKey, TeamID: provider.TeamID, KeyID: provider.KeyID}
+	copied := managerTokenWithKey(t, key, "key", "team")
 	if same, err := manager.GetByToken(copied); err != nil || same != first {
-		t.Fatalf("copied identity = %p, %v, want %p", same, err, first)
+		t.Fatalf("copied identity = %p, %v", same, err)
 	}
-	for _, provider := range []*token.Token{
-		{AuthKey: provider.AuthKey, TeamID: "other team", KeyID: provider.KeyID},
-		{AuthKey: provider.AuthKey, TeamID: provider.TeamID, KeyID: "other key ID"},
+	for _, other := range []*token.Token{
+		managerTokenWithKey(t, key, "key", "other team"),
+		managerTokenWithKey(t, key, "other key", "team"),
 		managerTestToken(t),
 	} {
-		client, err := manager.GetByToken(provider)
-		if err != nil || client == nil || client == first {
-			t.Fatalf("different signing identity = %p, %v", client, err)
+		if client, err := manager.GetByToken(other); err != nil || client == nil || client == first {
+			t.Fatalf("distinct identity = %p, %v", client, err)
 		}
-		defer client.CloseIdleConnections()
 	}
-	manager.Host = HostProduction
-	production, err := manager.GetByToken(provider)
-	if err != nil || production == nil || production == first || production.Host != HostProduction {
-		t.Fatalf("production identity = %+v, %v", production, err)
+	production := managerForTest(t, ManagerConfig{Host: HostProduction})
+	client, err := production.GetByToken(provider)
+	if err != nil || client == first || client.Host() != HostProduction {
+		t.Fatalf("production client = %v, %v", client, err)
 	}
-	defer production.CloseIdleConnections()
-	manager.Host = HostDevelopment
-	if same, err := manager.GetByToken(provider); err != nil || same != first {
-		t.Fatal("development cache entry was overwritten")
+	devKey, err := tokenCacheKey(provider, HostDevelopment)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if manager.Len() != 5 {
-		t.Fatalf("cache length = %d, want 5", manager.Len())
+	prodKey, err := tokenCacheKey(provider, HostProduction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devKey == prodKey || manager.Len() != 4 {
+		t.Fatal("host or signing identity was omitted from cache key")
 	}
 }
 
 func TestClientManagerConcurrentTokenGet(t *testing.T) {
 	provider := managerTestToken(t)
 	var calls atomic.Int32
-	manager := NewClientManager(WithHost(HostDevelopment))
-	manager.TokenFactory = func(provider *token.Token, host string) *Client {
+	var manager *ClientManager
+	manager = managerForTest(t, ManagerConfig{TokenFactory: func(t *token.Token, host string) (*Client, error) {
 		calls.Add(1)
 		_ = manager.Len()
-		return &Client{Token: provider, Host: host}
-	}
+		return &Client{token: t, host: host}, nil
+	}})
 	clients := make(chan *Client, 32)
 	var workers sync.WaitGroup
 	for range cap(clients) {
@@ -93,65 +108,55 @@ func TestClientManagerConcurrentTokenGet(t *testing.T) {
 	first := <-clients
 	for client := range clients {
 		if client != first {
-			t.Fatal("concurrent token lookups constructed different clients")
+			t.Fatal("constructed duplicate token client")
 		}
 	}
 	if calls.Load() != 1 || manager.Len() != 1 {
-		t.Fatalf("factory calls = %d, cache length = %d", calls.Load(), manager.Len())
+		t.Fatalf("calls = %d, length = %d", calls.Load(), manager.Len())
 	}
 }
 
 func TestClientManagerInvalidTokensLeaveCacheUnchanged(t *testing.T) {
-	manager := NewClientManager(WithHost(HostDevelopment))
-	wrongCurve, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, provider := range []*token.Token{nil, {}, {AuthKey: wrongCurve}} {
-		if client, err := manager.GetByToken(provider); err == nil || client != nil {
-			t.Errorf("invalid token returned %v, %v", client, err)
+	manager := managerForTest(t, ManagerConfig{})
+	for _, provider := range []*token.Token{nil, {}} {
+		if client, err := manager.GetByToken(provider); client != nil || !errors.Is(err, token.ErrAuthKeyNil) {
+			t.Fatalf("invalid token = %v, %v", client, err)
 		}
-		if removed, err := manager.RemoveByToken(provider); err == nil || removed {
-			t.Errorf("invalid token removal returned %v, %v", removed, err)
+		if removed, err := manager.RemoveByToken(provider); removed || err == nil {
+			t.Fatalf("invalid removal = %v, %v", removed, err)
 		}
 	}
-	if client, err := manager.GetByToken(nil); !errors.Is(err, token.ErrAuthKeyNil) || client != nil {
-		t.Fatalf("nil token returned %v, %v", client, err)
-	}
-	if err := manager.Add(&Client{Token: &token.Token{}}); err == nil {
+	if err := manager.Add(&Client{token: &token.Token{}, host: HostDevelopment}); err == nil {
 		t.Fatal("Add accepted invalid token")
 	}
 	if err := manager.Add(nil); err == nil {
 		t.Fatal("Add accepted nil client")
 	}
 	if manager.Len() != 0 {
-		t.Fatal("invalid identity mutated the cache")
+		t.Fatal("invalid identity changed cache")
 	}
 }
 
 func TestClientManagerRemovesTokenAndRecreates(t *testing.T) {
 	provider := managerTestToken(t)
-	manager := NewClientManager(WithHost(HostDevelopment))
+	manager := managerForTest(t, ManagerConfig{})
 	cleanup := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
-	first := &Client{Token: provider, Host: HostDevelopment, httpClient: &http.Client{Transport: cleanup}}
+	first := &Client{token: provider, host: HostDevelopment, httpClient: &http.Client{Transport: cleanup}}
 	if err := manager.Add(first); err != nil {
 		t.Fatal(err)
 	}
-	if cached, err := manager.GetByToken(provider); err != nil || cached != first {
-		t.Fatalf("token Add returned %p, %v", cached, err)
+	if got, err := manager.GetByToken(provider); err != nil || got != first {
+		t.Fatalf("added lookup = %p, %v", got, err)
 	}
-	removed, err := manager.RemoveByToken(provider)
-	if err != nil || !removed || manager.Len() != 0 || cleanup.closed.Load() != 1 {
-		t.Fatalf("removal = %v, %v, cache length = %d, closed = %d", removed, err, manager.Len(), cleanup.closed.Load())
+	if removed, err := manager.RemoveByToken(provider); err != nil || !removed || manager.Len() != 0 || cleanup.closed.Load() != 1 {
+		t.Fatalf("remove = %v, %v, length %d, closed %d", removed, err, manager.Len(), cleanup.closed.Load())
 	}
 	if removed, err := manager.RemoveByToken(provider); err != nil || removed {
 		t.Fatalf("second removal = %v, %v", removed, err)
 	}
-	fresh, err := manager.GetByToken(provider)
-	if err != nil || fresh == nil || fresh == first {
-		t.Fatalf("fresh token client = %p, %v", fresh, err)
+	if fresh, err := manager.GetByToken(provider); err != nil || fresh == nil || fresh == first {
+		t.Fatalf("fresh client = %p, %v", fresh, err)
 	}
-	defer fresh.CloseIdleConnections()
 }
 
 func TestClientManagerRemovalDiscardsPendingFactory(t *testing.T) {
@@ -160,111 +165,149 @@ func TestClientManagerRemovalDiscardsPendingFactory(t *testing.T) {
 			provider := managerTestToken(t)
 			certificate := managerTestCertificate(1)
 			entered, release := make(chan struct{}), make(chan struct{})
-			defer func() {
-				select {
-				case <-release:
-				default:
-					close(release)
-				}
-			}()
-			manager := NewClientManager(WithHost(HostDevelopment))
-			cleanup := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
-			built := &Client{Certificate: certificate, Token: provider, Host: HostDevelopment, httpClient: &http.Client{Transport: cleanup}}
-			factory := func() *Client {
-				close(entered)
-				<-release
-				return built
+			var unblock sync.Once
+			defer unblock.Do(func() { close(release) })
+			cleanup := &managerCleanupTransport{}
+			old := managerTestClient(certificate)
+			old.httpClient = &http.Client{Transport: cleanup}
+			fresh := managerTestClient(certificate)
+			if tokenAuth {
+				old.token, fresh.token = provider, provider
 			}
-			manager.Factory = func(tls.Certificate) *Client { return factory() }
-			manager.TokenFactory = func(*token.Token, string) *Client { return factory() }
-			get := func() *Client {
+			var calls atomic.Int32
+			factory := func() (*Client, error) {
+				if calls.Add(1) == 1 {
+					close(entered)
+					<-release
+					return old, nil
+				}
+				return fresh, nil
+			}
+			manager := managerForTest(t, ManagerConfig{
+				Factory:      func(tls.Certificate) (*Client, error) { return factory() },
+				TokenFactory: func(*token.Token, string) (*Client, error) { return factory() },
+			})
+			get := func() (*Client, error) {
 				if tokenAuth {
-					client, err := manager.GetByToken(provider)
-					if err != nil {
-						t.Error(err)
-					}
-					return client
+					return manager.GetByToken(provider)
 				}
 				return manager.Get(certificate)
 			}
-			result := make(chan *Client, 1)
-			go func() { result <- get() }()
-			select {
-			case <-entered:
-			case <-time.After(time.Second):
-				t.Fatal("factory did not start")
+			type result struct {
+				client *Client
+				err    error
 			}
+			done := make(chan result, 1)
+			go func() { client, err := get(); done <- result{client, err} }()
+			<-entered
 			if tokenAuth {
 				if removed, err := manager.RemoveByToken(provider); err != nil || !removed {
-					t.Fatalf("pending token removal = %v, %v", removed, err)
+					t.Fatalf("removal = %v, %v", removed, err)
 				}
 			} else if !manager.Remove(certificate) {
-				t.Fatal("pending certificate removal failed")
+				t.Fatal("pending certificate was not removed")
 			}
-			close(release)
-			select {
-			case client := <-result:
-				if client != nil {
-					t.Fatal("removed factory result was returned")
-				}
-			case <-time.After(time.Second):
-				t.Fatal("removed factory call did not finish")
+			if client, err := get(); err != nil || client != fresh {
+				t.Fatalf("replacement lookup = %p, %v", client, err)
 			}
-			if manager.Len() != 0 || cleanup.closed.Load() != 1 {
-				t.Fatalf("cache length = %d, discarded cleanup = %d", manager.Len(), cleanup.closed.Load())
+			unblock.Do(func() { close(release) })
+			got := <-done
+			if got.client != nil || !errors.Is(got.err, ErrClientRemoved) {
+				t.Fatalf("removed lookup = %p, %v", got.client, got.err)
+			}
+			if cached, err := get(); err != nil || cached != fresh || cleanup.closed.Load() != 1 {
+				t.Fatalf("fresh cache = %p, %v, old cleanup %d", cached, err, cleanup.closed.Load())
 			}
 		})
 	}
 }
 
-func TestClientManagerRemovesCertificateAndRecreates(t *testing.T) {
-	certificate := managerTestCertificate(1)
-	manager := NewClientManager(WithHost(HostDevelopment))
-	cleanup := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
-	first := &Client{Certificate: certificate, httpClient: &http.Client{Transport: cleanup}}
-	if err := manager.Add(first); err != nil {
-		t.Fatal(err)
-	}
-	if !manager.Remove(certificate) || manager.Len() != 0 || cleanup.closed.Load() != 1 {
-		t.Fatalf("cache length = %d, closed = %d", manager.Len(), cleanup.closed.Load())
-	}
-	if manager.Remove(certificate) {
-		t.Fatal("missing certificate was removed twice")
-	}
-	fresh := manager.Get(certificate)
-	if fresh == nil || fresh == first {
-		t.Fatal("certificate lookup did not create a fresh client")
-	}
-	defer fresh.CloseIdleConnections()
-}
-
 func TestClientManagerTokenSharesEvictionAndExpiry(t *testing.T) {
 	provider := managerTestToken(t)
-	manager := NewClientManager(WithHost(HostDevelopment))
-	manager.MaxSize = 1
-	cleanup := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
-	first := &Client{Token: provider, Host: HostDevelopment, httpClient: &http.Client{Transport: cleanup}}
+	manager := managerForTest(t, ManagerConfig{MaxSize: 1, MaxAge: time.Hour, Factory: func(c tls.Certificate) (*Client, error) { return managerTestClient(c), nil }})
+	cleanup := &managerCleanupTransport{}
+	first := &Client{token: provider, host: HostDevelopment, httpClient: &http.Client{Transport: cleanup}}
 	if err := manager.Add(first); err != nil {
 		t.Fatal(err)
 	}
-	certificate := manager.Get(managerTestCertificate(1))
-	defer certificate.CloseIdleConnections()
+	_, err := manager.Get(managerTestCertificate(1))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if manager.Len() != 1 || cleanup.closed.Load() != 1 {
-		t.Fatal("certificate lookup did not evict token client")
+		t.Fatal("certificate did not evict token client")
 	}
 	if err := manager.Add(first); err != nil {
 		t.Fatal(err)
 	}
-	manager.MaxAge = time.Hour
-	manager.mu.Lock()
 	manager.ll.Front().Value.(*managerItem).lastUsed = time.Now().Add(-2 * time.Hour)
-	manager.mu.Unlock()
-	fresh, err := manager.GetByToken(provider)
-	if err != nil || fresh == nil || fresh == first {
-		t.Fatalf("expired token client = %p, %v", fresh, err)
+	if fresh, err := manager.GetByToken(provider); err != nil || fresh == nil || fresh == first {
+		t.Fatalf("expired client = %p, %v", fresh, err)
 	}
-	defer fresh.CloseIdleConnections()
 	if cleanup.closed.Load() != 2 {
-		t.Fatalf("expired token client cleanup calls = %d, want 2", cleanup.closed.Load())
+		t.Fatalf("expired cleanup = %d", cleanup.closed.Load())
+	}
+}
+
+func TestClientManagerFactoryErrorsAndNilResults(t *testing.T) {
+	provider := managerTestToken(t)
+	failure := errors.New("HSM unavailable")
+	for _, factory := range []func(*token.Token, string) (*Client, error){
+		func(*token.Token, string) (*Client, error) { return nil, failure },
+		func(*token.Token, string) (*Client, error) { return nil, nil },
+	} {
+		manager := managerForTest(t, ManagerConfig{TokenFactory: factory})
+		client, err := manager.GetByToken(provider)
+		if client != nil || err == nil || manager.Len() != 0 {
+			t.Fatalf("failed construction = %p, %v", client, err)
+		}
+	}
+}
+
+func TestClientManagerCloseIdleConnectionsOutsideLock(t *testing.T) {
+	manager := managerForTest(t, ManagerConfig{})
+	for id := range 2 {
+		transport := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
+		client := managerTestClient(managerTestCertificate(id))
+		client.httpClient = &http.Client{Transport: transport}
+		if err := manager.Add(client); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan struct{})
+	go func() { manager.CloseIdleConnections(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("manager cleanup held its lock")
+	}
+	if manager.Len() != 2 {
+		t.Fatal("idle cleanup evicted entries")
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, ele := range manager.cache {
+		transport := ele.Value.(*managerItem).client.httpClient.Transport.(*managerCleanupTransport)
+		if transport.closed.Load() != 1 {
+			t.Fatalf("cleanup calls = %d", transport.closed.Load())
+		}
+	}
+}
+
+func TestClientManagerRejectsFactoryIdentityMismatch(t *testing.T) {
+	provider := managerTestToken(t)
+	wrong := managerTestToken(t)
+	manager := managerForTest(t, ManagerConfig{
+		Factory:      func(tls.Certificate) (*Client, error) { return managerTestClient(managerTestCertificate(2)), nil },
+		TokenFactory: func(*token.Token, string) (*Client, error) { return &Client{host: HostDevelopment, token: wrong}, nil },
+	})
+	if client, err := manager.Get(managerTestCertificate(1)); err == nil || client != nil {
+		t.Fatalf("mismatched certificate = %p, %v", client, err)
+	}
+	if client, err := manager.GetByToken(provider); err == nil || client != nil {
+		t.Fatalf("mismatched token = %p, %v", client, err)
+	}
+	if manager.Len() != 0 {
+		t.Fatal("mismatched identity was cached")
 	}
 }

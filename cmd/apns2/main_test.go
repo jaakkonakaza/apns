@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jaakkonakaza/apns2"
@@ -93,7 +94,7 @@ func TestTokenAuthenticationAndPriority(t *testing.T) {
 		pushType, priority, wantPriority string
 	}{
 		{"alert", "0", ""},
-		{"background", "5", "5"},
+		{"background", "0", "5"},
 		{"liveactivity", "10", "10"},
 		{"location", "1", "1"},
 	} {
@@ -162,5 +163,30 @@ func TestVersionString(t *testing.T) {
 				t.Errorf("version = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCLIReportsRejectedNotifications(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"reason":"InvalidProviderToken"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	args := []string{"--auth-key-path=../../token/testdata/authkey-valid.p8", "--key-id=KEY123", "--team-id=TEAM123", "--topic=com.example"}
+	var output bytes.Buffer
+	err := run(args, strings.NewReader("aabbcc {}\naabbcc {}\n"), &output, io.Discard,
+		apns2.WithHost(server.URL), apns2.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
+	if err == nil || err.Error() != "APNs rejected 1 of 2 notifications" {
+		t.Fatalf("run error = %v", err)
+	}
+	if requests.Load() != 2 || output.String() != "403: 'InvalidProviderToken'\n200: ''\n" {
+		t.Fatalf("requests = %d, output = %q", requests.Load(), output.String())
 	}
 }

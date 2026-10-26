@@ -36,7 +36,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 	flags.StringVar(&topic, "topic", "", "APNs topic, typically the app bundle ID (required).")
 	flags.StringVar(&mode, "mode", "production", "APNs server: production or development.")
 	flags.StringVar(&pushType, "push-type", string(apns2.PushTypeAlert), "apns-push-type header; it must match the payload.")
-	flags.IntVar(&priority, "priority", 0, "APNs priority: 1, 5 or 10 (0 omits the header).")
+	flags.IntVar(&priority, "priority", 0, "APNs priority: 1, 5 or 10 (0 uses the push type default).")
 	flags.BoolVar(&version, "version", false, "Show application version.")
 	flags.Usage = func() {
 		_, _ = fmt.Fprintln(diagnostics, "Usage: apns2 --topic=TOPIC [authentication flags] [flags]\nReads STDIN lines formatted as: <DeviceToken> <APNs Payload>")
@@ -79,19 +79,30 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 	options = append([]apns2.ClientOption{apns2.WithHost(host)}, options...)
 	var client *apns2.Client
 	if certificatePath != "" {
-		cert, err := certificate.FromPemFile(certificatePath)
+		cert, err := certificate.FromPEMFile(certificatePath)
 		if err != nil {
 			return fmt.Errorf("load certificate %q: %w", certificatePath, err)
 		}
-		client = apns2.NewClient(cert, options...)
+		client, err = apns2.NewClient(cert, options...)
+		if err != nil {
+			return err
+		}
 	} else {
 		key, err := token.AuthKeyFromFile(authKeyPath)
 		if err != nil {
 			return fmt.Errorf("load signing key %q: %w", authKeyPath, err)
 		}
-		client = apns2.NewTokenClient(&token.Token{AuthKey: key, KeyID: keyID, TeamID: teamID}, options...)
+		provider, err := token.New(key, keyID, teamID)
+		if err != nil {
+			return err
+		}
+		client, err = apns2.NewTokenClient(provider, options...)
+		if err != nil {
+			return err
+		}
 	}
 	defer client.CloseIdleConnections()
+	rejected, sent := 0, 0
 	scanner := bufio.NewScanner(input)
 	for scanner.Scan() {
 		deviceToken, payload, ok := strings.Cut(strings.TrimSpace(scanner.Text()), " ")
@@ -103,12 +114,19 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 		if err != nil {
 			return err
 		}
+		sent++
+		if !res.Success() {
+			rejected++
+		}
 		if _, err := fmt.Fprintf(output, "%v: '%v'\n", res.StatusCode, res.Reason); err != nil {
 			return err
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read notifications: %w", err)
+	}
+	if rejected != 0 {
+		return fmt.Errorf("APNs rejected %d of %d notifications", rejected, sent)
 	}
 	return nil
 }

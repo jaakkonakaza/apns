@@ -2,7 +2,6 @@ package apns2
 
 import (
 	"container/list"
-	"crypto/elliptic"
 	"crypto/sha1"
 	"crypto/tls"
 	"errors"
@@ -13,19 +12,50 @@ import (
 	"github.com/jaakkonakaza/apns2/token"
 )
 
+// ErrClientRemoved means an entry was removed while its client was being built.
+var ErrClientRemoved = errors.New("apns2: client removed during construction")
+
+// ErrClientUnavailable means a factory is absent or returned no client.
+var ErrClientUnavailable = errors.New("apns2: client factory returned no client")
+
+// ManagerConfig configures a cache and its client factories.
+// Set configuration before calling NewClientManager. Later changes do not affect it.
+type ManagerConfig struct {
+	// Host is the APNs endpoint shared by cached clients.
+	Host string
+
+	// MaxSize limits cached clients. Zero means no limit.
+	MaxSize int
+
+	// MaxAge expires clients after this much time without use. Zero disables expiry.
+	MaxAge time.Duration
+
+	// ClientOptions configure the default factories. Host is set by Host above.
+	// WithHTTPClient is unsupported because identities need independent connections.
+	// Supply a custom factory to configure an HTTP client per identity.
+	ClientOptions []ClientOption
+
+	// Factory constructs certificate clients outside the cache lock.
+	// It must use Host and must not look up the identity it is constructing.
+	Factory func(tls.Certificate) (*Client, error)
+
+	// TokenFactory constructs token clients outside the cache lock.
+	// It must use the supplied host and must not look up the identity it is constructing.
+	TokenFactory func(*token.Token, string) (*Client, error)
+}
+
 type managerKey struct {
 	certificate [sha1.Size]byte
-	token       bool
-	teamID      string
-	keyID       string
-	publicKey   string
+	token       token.Identity
+	tokenAuth   bool
 	host        string
 }
 
 type pendingClient struct {
 	done    chan struct{}
 	client  *Client
-	added   *Client // Latest explicit Add while Factory is running. Protected by the manager mutex.
+	err     error
+	added   *Client
 	removed bool
 }
 
@@ -35,35 +65,15 @@ type managerItem struct {
 	lastUsed time.Time
 }
 
-// ClientManager manages cached APNs clients. Set its configuration before
-// concurrent use. Factories run without the manager lock, and concurrent lookups
-// for the same identity share one factory call. Factories may use the manager,
-// but must not look up the identity they are building.
+// ClientManager caches clients by certificate or token signing identity and host.
+// Concurrent lookups for one identity share a factory call. Cache cleanup never
+// interrupts requests in use. The zero value can be inspected but has no factories.
 type ClientManager struct {
-	// MaxSize is the maximum number of clients allowed in the manager. When
-	// this limit is reached, the least recently used client is evicted. Set
-	// zero for no limit.
-	MaxSize int
-
-	// MaxAge is the maximum age of clients in the manager. Upon retrieval, if
-	// a client has remained unused in the manager for this duration or longer,
-	// it is replaced using the corresponding factory, or evicted if it returns nil.
-	// Set zero to disable expiration, the default: Apple recommends reusing connections
-	// for hours or days.
-	MaxAge time.Duration
-
-	// Factory is the function which constructs clients if not found in the
-	// manager.
-	Factory func(certificate tls.Certificate) *Client
-
-	// Host is the APNs host for token clients. Configure it before concurrent use.
-	Host string
-
-	// TokenFactory constructs a token client for a signing identity and host.
-	// It runs outside the manager lock. Concurrent lookups for the same identity
-	// and host share one call. The result must use the supplied host.
-	// A nil factory or result leaves the identity uncached.
-	TokenFactory func(t *token.Token, host string) *Client
+	host         string
+	maxSize      int
+	maxAge       time.Duration
+	factory      func(tls.Certificate) (*Client, error)
+	tokenFactory func(*token.Token, string) (*Client, error)
 
 	cache   map[managerKey]*list.Element
 	pending map[managerKey]*pendingClient
@@ -72,52 +82,66 @@ type ClientManager struct {
 	once    sync.Once
 }
 
-// NewClientManager returns a new ClientManager for prolonged, concurrent usage
-// of multiple APNs clients. ClientManager is flexible enough to work best for
-// your use case. When a client is not found in the manager, Get will return
-// the result of calling Factory, which can be a Client or nil.
-//
-// Having multiple clients per certificate in the manager is not allowed.
-//
-// By default, MaxSize is 64, MaxAge is zero (no expiry), and Factory always returns
-// a Client with the supplied constructor options. Include WithHost, because
-// clients have no default host. WithHTTPClient is unsupported
-// and causes a panic. Use Factory to supply a separate HTTP client for each
-// certificate, or TokenFactory for each token identity.
-func NewClientManager(options ...ClientOption) *ClientManager {
-	options = append([]ClientOption(nil), options...)
-	config := defaultClientConfig()
-	for _, option := range options {
-		option(&config)
+// NewClientManager constructs a client cache without making network connections.
+// The default factories use config.Host and config.ClientOptions. Custom factories
+// must return independent clients configured for the same host.
+func NewClientManager(config ManagerConfig) (*ClientManager, error) {
+	if err := validateHost(config.Host, true); err != nil {
+		return nil, err
 	}
-	if config.httpClient != nil {
-		panic("apns2: NewClientManager does not support WithHTTPClient, use Factory for per-certificate HTTP clients")
+	if config.MaxSize < 0 || config.MaxAge < 0 {
+		return nil, errors.New("apns2: cache limits must not be negative")
 	}
+	options := append([]ClientOption(nil), config.ClientOptions...)
+	clientConfig, err := clientConfigForOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	if clientConfig.httpClient != nil {
+		return nil, errors.New("apns2: manager ClientOptions cannot include WithHTTPClient, use a per-identity factory")
+	}
+	if clientConfig.host != "" && clientConfig.host != config.Host {
+		return nil, errors.New("apns2: manager Host conflicts with WithHost")
+	}
+	if config.Factory == nil && config.TokenFactory == nil {
+		if err := validateHost(config.Host, false); err != nil {
+			return nil, err
+		}
+	}
+	options = append(options, WithHost(config.Host))
 	manager := &ClientManager{
-		MaxSize: 64,
-		Host:    config.host,
-		Factory: func(certificate tls.Certificate) *Client { return NewClient(certificate, options...) },
-		TokenFactory: func(t *token.Token, host string) *Client {
-			tokenOptions := append(append([]ClientOption(nil), options...), WithHost(host))
-			return NewTokenClient(t, tokenOptions...)
-		},
+		host: config.Host, maxSize: config.MaxSize, maxAge: config.MaxAge,
+		factory: config.Factory, tokenFactory: config.TokenFactory,
 	}
-
+	if manager.factory == nil {
+		manager.factory = func(certificate tls.Certificate) (*Client, error) {
+			return NewClient(certificate, options...)
+		}
+	}
+	if manager.tokenFactory == nil {
+		manager.tokenFactory = func(t *token.Token, host string) (*Client, error) {
+			return NewTokenClient(t, options...)
+		}
+	}
 	manager.initInternals()
-
-	return manager
+	return manager, nil
 }
 
-// Add stores an individually configured certificate or token client. Token
-// clients use their Host and signing identity as the cache key.
+// Host returns the configured APNs endpoint.
+func (m *ClientManager) Host() string { return m.host }
+
+// Add stores a configured client for this manager's host and signing identity.
 func (m *ClientManager) Add(client *Client) error {
 	if client == nil {
 		return errors.New("apns2: client is nil")
 	}
-	key := cacheKey(client.Certificate)
-	if client.Token != nil {
+	if client.host != m.host {
+		return errors.New("apns2: client host does not match manager host")
+	}
+	key := certificateCacheKey(client.certificate, client.host)
+	if client.token != nil {
 		var err error
-		key, err = tokenCacheKey(client.Token, client.Host)
+		key, err = tokenCacheKey(client.token, client.host)
 		if err != nil {
 			return err
 		}
@@ -147,46 +171,44 @@ func (m *ClientManager) addLocked(key managerKey, client *Client, now time.Time)
 	}
 	ele := m.ll.PushFront(&managerItem{key, client, now})
 	m.cache[key] = ele
-	if m.MaxSize != 0 && m.ll.Len() > m.MaxSize {
+	if m.maxSize != 0 && m.ll.Len() > m.maxSize {
 		return m.removeElementLocked(m.ll.Back())
 	}
 	return nil
 }
 
-// Get gets a Client from the manager. If a Client is not found in the manager
-// or if a Client has remained in the manager longer than MaxAge, Get will call
-// the ClientManager's Factory function, store the result in the manager if
-// non-nil, and return it. If Add supplies a client while Factory is running,
-// Get returns the added client.
-func (m *ClientManager) Get(certificate tls.Certificate) (client *Client) {
-	return m.get(cacheKey(certificate), func() *Client {
-		if m.Factory == nil {
-			return nil
+// Get returns the cached certificate client or constructs it with Factory.
+// Construction failures are returned to every waiter. If Add supplies a client
+// while construction is running, Get returns the added client instead.
+func (m *ClientManager) Get(certificate tls.Certificate) (*Client, error) {
+	return m.get(certificateCacheKey(certificate, m.host), func() (*Client, error) {
+		if m.factory == nil {
+			return nil, ErrClientUnavailable
 		}
-		return m.Factory(certificate)
+		return m.factory(certificate)
 	})
 }
 
-func (m *ClientManager) get(key managerKey, factory func() *Client) (client *Client) {
+func (m *ClientManager) get(key managerKey, factory func() (*Client, error)) (client *Client, err error) {
 	m.initInternals()
 	m.mu.Lock()
 	var stale *Client
 	if ele, hit := m.cache[key]; hit {
 		item := ele.Value.(*managerItem)
 		now := time.Now()
-		if m.MaxAge == 0 || item.lastUsed.After(now.Add(-m.MaxAge)) {
+		if m.maxAge == 0 || item.lastUsed.After(now.Add(-m.maxAge)) {
 			item.lastUsed = now
 			m.ll.MoveToFront(ele)
 			cached := item.client
 			m.mu.Unlock()
-			return cached
+			return cached, nil
 		}
 		stale = item.client
 	}
 	if call, ok := m.pending[key]; ok {
 		m.mu.Unlock()
 		<-call.done
-		return call.client
+		return call.client, call.err
 	}
 	call := &pendingClient{done: make(chan struct{})}
 	m.pending[key] = call
@@ -194,64 +216,77 @@ func (m *ClientManager) get(key managerKey, factory func() *Client) (client *Cli
 
 	completed := false
 	defer func() {
-		var retired *Client
+		var retired []*Client
 		m.mu.Lock()
 		if m.pending[key] == call {
 			delete(m.pending, key)
 		}
 		if call.removed {
-			retired = call.client
-			call.client = nil
+			retired = append(retired, call.client)
+			call.client, call.err = nil, ErrClientRemoved
 		} else if call.added != nil {
 			if call.client != call.added {
-				retired = call.client
+				retired = append(retired, call.client)
 			}
-			call.client = call.added
-		} else if call.client != nil {
-			retired = m.addLocked(key, call.client, time.Now())
-		} else if ele, hit := m.cache[key]; completed && hit && stale != nil && ele.Value.(*managerItem).client == stale {
-			retired = m.removeElementLocked(ele)
+			call.client, call.err = call.added, nil
+		} else if call.err == nil && call.client != nil {
+			retired = append(retired, m.addLocked(key, call.client, time.Now()))
+		} else {
+			retired = append(retired, call.client)
+			call.client = nil
+			if call.err == nil {
+				call.err = ErrClientUnavailable
+			}
+			if ele, hit := m.cache[key]; completed && hit && stale != nil && ele.Value.(*managerItem).client == stale {
+				retired = append(retired, m.removeElementLocked(ele))
+			}
 		}
-		client = call.client
+		client, err = call.client, call.err
 		m.mu.Unlock()
 		close(call.done)
-		closeClientIdleConnections(retired)
+		for _, old := range retired {
+			closeClientIdleConnections(old)
+		}
 	}()
-	if factory != nil {
-		call.client = factory()
+	call.client, call.err = factory()
+	if call.err == nil && call.client != nil {
+		actual := certificateCacheKey(call.client.certificate, call.client.host)
+		if call.client.token != nil {
+			actual, call.err = tokenCacheKey(call.client.token, call.client.host)
+		}
+		if call.err == nil && actual != key {
+			call.err = errors.New("apns2: factory client does not match the requested identity and host")
+		}
 	}
 	completed = true
-	return call.client
+	return call.client, call.err
 }
 
-// GetByToken gets a token-authenticated client for the manager's Host. Tokens
-// with the same team ID, key ID and public key share a client. Refreshing a
-// bearer does not change its cache identity. Invalid signing keys return errors.
+// GetByToken returns a client for the token's team, key ID, public key and host.
+// Bearer refreshes do not change the cache identity.
 func (m *ClientManager) GetByToken(t *token.Token) (*Client, error) {
-	key, err := tokenCacheKey(t, m.Host)
+	key, err := tokenCacheKey(t, m.host)
 	if err != nil {
 		return nil, err
 	}
-	return m.get(key, func() *Client {
-		if m.TokenFactory == nil {
-			return nil
+	return m.get(key, func() (*Client, error) {
+		if m.tokenFactory == nil {
+			return nil, ErrClientUnavailable
 		}
-		return m.TokenFactory(t, key.host)
-	}), nil
+		return m.tokenFactory(t, key.host)
+	})
 }
 
-// Remove removes the cached certificate client and closes its idle connections.
-// It also prevents a factory call already in progress from caching its result.
-// That call and its waiters return nil. A later Get can create a fresh client.
+// Remove removes the certificate client and closes its idle connections.
+// In-progress construction and its waiters receive ErrClientRemoved. A later
+// lookup can construct a fresh client. Requests already in use are unaffected.
 func (m *ClientManager) Remove(certificate tls.Certificate) bool {
-	return m.remove(cacheKey(certificate))
+	return m.remove(certificateCacheKey(certificate, m.host))
 }
 
-// RemoveByToken removes the token client for the signing identity and the
-// manager's Host. It closes idle connections and discards pending construction,
-// as Remove does. In-use requests are not interrupted.
+// RemoveByToken removes the signing identity's client, as Remove does.
 func (m *ClientManager) RemoveByToken(t *token.Token) (bool, error) {
-	key, err := tokenCacheKey(t, m.Host)
+	key, err := tokenCacheKey(t, m.host)
 	if err != nil {
 		return false, err
 	}
@@ -275,7 +310,22 @@ func (m *ClientManager) remove(key managerKey) bool {
 	return retired != nil || call != nil
 }
 
-// Len returns the current size of the ClientManager.
+// CloseIdleConnections closes idle connections on all cached clients.
+// It does not remove entries or interrupt requests already in use.
+func (m *ClientManager) CloseIdleConnections() {
+	m.initInternals()
+	m.mu.Lock()
+	clients := make([]*Client, 0, len(m.cache))
+	for _, ele := range m.cache {
+		clients = append(clients, ele.Value.(*managerItem).client)
+	}
+	m.mu.Unlock()
+	for _, client := range clients {
+		closeClientIdleConnections(client)
+	}
+}
+
+// Len returns the number of cached clients.
 func (m *ClientManager) Len() int {
 	m.initInternals()
 	m.mu.Lock()
@@ -304,26 +354,18 @@ func closeClientIdleConnections(client *Client) {
 	}
 }
 
-func cacheKey(certificate tls.Certificate) managerKey {
+func certificateCacheKey(certificate tls.Certificate, host string) managerKey {
 	var data []byte
-
 	for _, cert := range certificate.Certificate {
 		data = append(data, cert...)
 	}
-
-	return managerKey{certificate: sha1.Sum(data)}
+	return managerKey{certificate: sha1.Sum(data), host: host}
 }
 
 func tokenCacheKey(t *token.Token, host string) (managerKey, error) {
-	if t == nil || t.AuthKey == nil {
-		return managerKey{}, token.ErrAuthKeyNil
-	}
-	if t.AuthKey.Curve != elliptic.P256() {
-		return managerKey{}, token.ErrAuthKeyCurve
-	}
-	publicKey, err := t.AuthKey.PublicKey.Bytes()
+	identity, err := t.Identity()
 	if err != nil {
-		return managerKey{}, fmt.Errorf("apns2: token public key: %w", err)
+		return managerKey{}, fmt.Errorf("apns2: token identity: %w", err)
 	}
-	return managerKey{token: true, teamID: t.TeamID, keyID: t.KeyID, publicKey: string(publicKey), host: host}, nil
+	return managerKey{tokenAuth: true, token: identity, host: host}, nil
 }

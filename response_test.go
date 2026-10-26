@@ -13,14 +13,14 @@ import (
 
 // Unit Tests
 
-func TestResponseSent(t *testing.T) {
-	if got, want := apns.StatusSent, http.StatusOK; !reflect.DeepEqual(got, want) {
+func TestResponseSuccess(t *testing.T) {
+	if got, want := apns.StatusAccepted, http.StatusOK; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := (&apns.Response{StatusCode: 200}).Sent(), true; !reflect.DeepEqual(got, want) {
+	if got, want := (&apns.Response{StatusCode: 200}).Success(), true; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := (&apns.Response{StatusCode: 400}).Sent(), false; !reflect.DeepEqual(got, want) {
+	if got, want := (&apns.Response{StatusCode: 400}).Success(), false; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 }

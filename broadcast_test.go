@@ -123,11 +123,10 @@ func TestBroadcastAndChannelRequests(t *testing.T) {
 			server.EnableHTTP2 = true
 			server.StartTLS()
 			defer server.Close()
-			client := apns.NewBroadcastTokenClient(mockToken(), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
-			client.Host, client.ChannelHost = server.URL, server.URL
+			client := mustBroadcastTokenClient(t, mockToken(), broadcastEndpoints(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
 			defer client.CloseIdleConnections()
 			response, err := tc.call(client)
-			if err != nil || response == nil || response.StatusCode != tc.status || !response.Success() || response.RequestID != broadcastRequestID || response.ApnsUniqueID != "unique-id" {
+			if err != nil || response == nil || response.StatusCode != tc.status || !response.Success() || response.RequestID != broadcastRequestID || response.APNSUniqueID != "unique-id" {
 				t.Fatalf("response = %+v, error = %v", response, err)
 			}
 		})
@@ -142,8 +141,7 @@ func TestBroadcastPushHeadersAndPayloadLimit(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	client := apns.NewBroadcastTokenClient(mockToken(), apns.WithHTTPClient(server.Client()))
-	client.Host = server.URL
+	client := mustBroadcastTokenClient(t, mockToken(), broadcastEndpoints(server.URL), apns.WithHTTPClient(server.Client()))
 	n := &apns.BroadcastNotification{BundleID: "com.example.app", ChannelID: broadcastChannelID, Payload: []byte(`{"aps":{}}`), Priority: apns.PriorityPowerSaving, Expiration: time.Unix(1234567890, 0)}
 	if _, err := client.Push(context.Background(), n); err != nil {
 		t.Fatal(err)
@@ -156,11 +154,10 @@ func TestBroadcastPushHeadersAndPayloadLimit(t *testing.T) {
 
 func TestBroadcastRejectsInvalidRequestsBeforeSending(t *testing.T) {
 	var requests atomic.Int32
-	client := apns.NewBroadcastTokenClient(mockToken(), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := mustBroadcastTokenClient(t, mockToken(), broadcastEndpoints("https://example.com"), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		requests.Add(1)
 		return nil, errors.New("unexpected request")
 	})}))
-	client.Host, client.ChannelHost = "https://example.com", "https://example.com"
 	valid := func() *apns.BroadcastNotification {
 		return &apns.BroadcastNotification{BundleID: "com.example.app", ChannelID: broadcastChannelID, Payload: `{"aps":{}}`}
 	}
@@ -208,8 +205,7 @@ func TestBroadcastRejectsInvalidRequestsBeforeSending(t *testing.T) {
 			return err
 		}},
 		{"missing host", func() error {
-			c := apns.NewBroadcastTokenClient(mockToken())
-			_, err := c.ListChannels(context.Background(), &apns.ChannelRequest{BundleID: "com.example.app"})
+			_, err := apns.NewBroadcastTokenClient(mockToken(), apns.BroadcastEndpoints{})
 			return err
 		}},
 	} {
@@ -233,8 +229,7 @@ func TestBroadcastResponseErrorsPreserveMetadata(t *testing.T) {
 				_, _ = io.WriteString(w, body)
 			}))
 			defer server.Close()
-			client := apns.NewBroadcastTokenClient(mockToken(), apns.WithHTTPClient(server.Client()))
-			client.ChannelHost = server.URL
+			client := mustBroadcastTokenClient(t, mockToken(), broadcastEndpoints(server.URL), apns.WithHTTPClient(server.Client()))
 			response, err := client.GetChannel(context.Background(), &apns.ChannelRequest{BundleID: "com.example.app", ChannelID: broadcastChannelID})
 			if response == nil || response.StatusCode != 400 || response.RequestID != broadcastRequestID {
 				t.Fatalf("response metadata lost: %+v", response)
@@ -261,8 +256,7 @@ func TestListChannelsExceedsPushResponseLimit(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body) }))
 	defer server.Close()
-	client := apns.NewBroadcastTokenClient(mockToken(), apns.WithHTTPClient(server.Client()))
-	client.ChannelHost = server.URL
+	client := mustBroadcastTokenClient(t, mockToken(), broadcastEndpoints(server.URL), apns.WithHTTPClient(server.Client()))
 	response, err := client.ListChannels(context.Background(), &apns.ChannelRequest{BundleID: "com.example.app"})
 	if err != nil || response == nil || len(response.ChannelIDs) != len(channels) {
 		t.Fatalf("large list = %+v, %v", response, err)
@@ -280,8 +274,7 @@ func TestBroadcastInvalidatesRejectedRestoredToken(t *testing.T) {
 		_, _ = io.WriteString(w, `{"reason":"ExpiredProviderToken"}`)
 	}))
 	defer server.Close()
-	client := apns.NewBroadcastTokenClient(provider, apns.WithHTTPClient(server.Client()))
-	client.ChannelHost = server.URL
+	client := mustBroadcastTokenClient(t, provider, broadcastEndpoints(server.URL), apns.WithHTTPClient(server.Client()))
 	if _, err := client.ListChannels(context.Background(), &apns.ChannelRequest{BundleID: "com.example.app"}); err != nil {
 		t.Fatal(err)
 	}
@@ -291,18 +284,16 @@ func TestBroadcastInvalidatesRejectedRestoredToken(t *testing.T) {
 }
 
 func TestBroadcastSigningAndCancellationErrors(t *testing.T) {
-	client := apns.NewBroadcastTokenClient(&token.Token{}, apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Error("request sent after signing failed")
+	client, err := apns.NewBroadcastTokenClient(&token.Token{}, broadcastEndpoints("https://example.com"), apns.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("request sent after invalid signing identity")
 		return nil, errors.New("unexpected request")
 	})}))
-	client.ChannelHost = "https://example.com"
-	if _, err := client.ListChannels(context.Background(), &apns.ChannelRequest{BundleID: "com.example.app"}); !errors.Is(err, token.ErrAuthKeyNil) {
-		t.Fatalf("signing error = %v", err)
+	if !errors.Is(err, token.ErrAuthKeyNil) || client != nil {
+		t.Fatalf("constructor = %v, %v, want ErrAuthKeyNil", client, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	client = apns.NewBroadcastTokenClient(mockToken())
-	client.ChannelHost = "https://example.com"
+	client = mustBroadcastTokenClient(t, mockToken(), broadcastEndpoints("https://example.com"))
 	if _, err := client.ListChannels(ctx, &apns.ChannelRequest{BundleID: "com.example.app"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation error = %v", err)
 	}

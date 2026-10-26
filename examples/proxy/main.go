@@ -40,11 +40,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parse proxy URL: %w", err)
 	}
-	client := apns2.NewClient(certificate,
+	client, err := apns2.NewClient(certificate,
 		apns2.WithHost(apns2.HostProduction),
 		apns2.WithProxy(http.ProxyURL(proxyURL)),
 		apns2.WithIdleConnTimeout(60*time.Second),
 	)
+	if err != nil {
+		return err
+	}
 	defer client.CloseIdleConnections()
 
 	notification := &apns2.Notification{}
@@ -63,6 +66,11 @@ func run() error {
 		return fmt.Errorf("push notification: %w", err)
 	}
 
-	_, err = fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
-	return err
+	if _, err := fmt.Printf("%v %v %v\n", res.StatusCode, res.APNSID, res.Reason); err != nil {
+		return err
+	}
+	if !res.Success() {
+		return fmt.Errorf("APNs rejected notification: %s", res.Reason)
+	}
+	return nil
 }

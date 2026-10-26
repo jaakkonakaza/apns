@@ -59,14 +59,14 @@ func TestTransportAuthenticationAndReuse(t *testing.T) {
 			}
 			var client *apns.Client
 			if tokenAuth {
-				client = apns.NewTokenClient(mockToken(), options...)
+				client = mustTokenClient(t, mockToken(), options...)
 			} else {
-				client = apns.NewClient(server.TLS.Certificates[0], options...)
+				client = mustClient(t, server.TLS.Certificates[0], options...)
 			}
 			defer client.CloseIdleConnections()
 			for range 2 {
 				response, err := client.Push(context.Background(), mockNotification())
-				if err != nil || response == nil || !response.Sent() {
+				if err != nil || response == nil || !response.Success() {
 					t.Fatalf("push = %v, %v", response, err)
 				}
 			}
@@ -172,11 +172,11 @@ func TestTransportProxyProtocols(t *testing.T) {
 						roots.AddCert(proxy.Certificate())
 					}
 					options = append(options, apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
-					client := apns.NewTokenClient(mockToken(), options...)
+					client := mustTokenClient(t, mockToken(), options...)
 					defer client.CloseIdleConnections()
 					response, err := client.Push(context.Background(), mockNotification())
 					if protocol == "h2" {
-						if err != nil || response == nil || !response.Sent() {
+						if err != nil || response == nil || !response.Success() {
 							t.Fatalf("proxy push = %v, %v", response, err)
 						}
 						if requests.Load() != 1 {
@@ -205,12 +205,12 @@ func TestTransportRejectsRedirects(t *testing.T) {
 	for _, location := range []string{target.URL, ""} {
 		t.Run(map[bool]string{true: "with-location", false: "without-location"}[location != ""], func(t *testing.T) {
 			server := newRedirectServer(t, location)
-			client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
+			client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
 			defer client.CloseIdleConnections()
 			response, err := client.Push(context.Background(), mockNotification())
 			if location == "" {
 				// Without a Location there is nothing to follow, so the status is reported as is.
-				if err != nil || response == nil || response.StatusCode != http.StatusTemporaryRedirect || response.Sent() {
+				if err != nil || response == nil || response.StatusCode != http.StatusTemporaryRedirect || response.Success() {
 					t.Fatalf("redirect without location = %v, %v", response, err)
 				}
 				return
@@ -226,7 +226,7 @@ func TestTransportKeepsCallerRedirectPolicy(t *testing.T) {
 	server := newRedirectServer(t, "https://example.com/elsewhere")
 	httpClient := server.Client()
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithHTTPClient(httpClient))
+	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithHTTPClient(httpClient))
 	defer client.CloseIdleConnections()
 	response, err := client.Push(context.Background(), mockNotification())
 	if err != nil || response == nil || response.StatusCode != http.StatusTemporaryRedirect {
@@ -255,9 +255,8 @@ func TestTransportVerifiesServerCertificate(t *testing.T) {
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	defer server.Close()
-	client := apns.NewTokenClient(mockToken())
+	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL))
 	defer client.CloseIdleConnections()
-	client.Host = server.URL
 	if _, err := client.Push(context.Background(), mockNotification()); err == nil {
 		t.Fatal("accepted untrusted server certificate")
 	}
@@ -275,10 +274,10 @@ func TestTransportWrappedTLSConnection(t *testing.T) {
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	defer server.Close()
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithDialTLSContext(dialWrappedTLS), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
+	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithDialTLSContext(dialWrappedTLS), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
 	defer client.CloseIdleConnections()
 	response, err := client.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Sent() {
+	if err != nil || response == nil || !response.Success() {
 		t.Fatalf("wrapped TLS push = %v, %v", response, err)
 	}
 }
@@ -298,10 +297,10 @@ func TestTransportDirectALPN(t *testing.T) {
 	}}
 	server.StartTLS()
 	defer server.Close()
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
+	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
 	defer client.CloseIdleConnections()
 	response, err := client.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Sent() {
+	if err != nil || response == nil || !response.Success() {
 		t.Fatalf("direct push = %v, %v", response, err)
 	}
 	if protocols := <-offered; len(protocols) != 1 || protocols[0] != "h2" {
@@ -321,7 +320,7 @@ func TestTransportDialerReceivesDeadline(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithDialTimeout(timeout), apns.WithDialTLSContext(dial))
+	client := mustTokenClient(t, mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithDialTimeout(timeout), apns.WithDialTLSContext(dial))
 	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -343,11 +342,10 @@ func TestTransportWrappedRoundTripperEnforcesHTTP2(t *testing.T) {
 	for _, protocol := range []string{"h2", "http/1.1", "plaintext"} {
 		t.Run(protocol, func(t *testing.T) {
 			var requests atomic.Int32
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
 				w.WriteHeader(http.StatusOK)
-			})
-			server := httptest.NewUnstartedServer(handler)
+			}))
 			server.EnableHTTP2 = protocol == "h2"
 			if protocol == "plaintext" {
 				server.Start()
@@ -355,32 +353,45 @@ func TestTransportWrappedRoundTripperEnforcesHTTP2(t *testing.T) {
 				server.StartTLS()
 			}
 			defer server.Close()
-			options := []apns.ClientOption{apns.WithHost(server.URL)}
+			var wrapped atomic.Int32
+			options := []apns.ClientOption{
+				apns.WithHost(server.URL),
+				apns.WithTransportWrapper(func(next http.RoundTripper) http.RoundTripper {
+					return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						wrapped.Add(1)
+						return next.RoundTrip(r)
+					})
+				}),
+			}
 			if protocol != "plaintext" {
 				options = append(options, apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
 			}
-			native := apns.NewTokenClient(mockToken(), options...)
-			defer native.CloseIdleConnections()
-			transport := apns.HTTPClientForTesting(native).Transport
-			var wrapped atomic.Int32
-			httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				wrapped.Add(1)
-				return transport.RoundTrip(r)
-			})}
-			client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithHTTPClient(httpClient))
+			client, err := apns.NewTokenClient(mockToken(), options...)
+			if protocol == "plaintext" {
+				if err == nil || client != nil {
+					t.Fatalf("plaintext constructor = %v, %v", client, err)
+				}
+				if requests.Load() != 0 || wrapped.Load() != 0 {
+					t.Fatal("plaintext endpoint reached transport")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.CloseIdleConnections()
 			response, err := client.Push(context.Background(), mockNotification())
 			if wrapped.Load() != 1 {
 				t.Fatalf("wrapper calls = %d, want 1", wrapped.Load())
 			}
 			if protocol == "h2" {
-				if err != nil || response == nil || !response.Sent() {
+				if err != nil || response == nil || !response.Success() {
 					t.Fatalf("wrapped h2 push = %v, %v", response, err)
 				}
 				return
 			}
-			// An HTTP/1.1-only server refuses the h2-only ALPN offer during the handshake.
-			if err == nil || protocol == "plaintext" && !errors.Is(err, apns.ErrHTTP2Required) {
-				t.Fatalf("wrapped %s push error = %v", protocol, err)
+			if err == nil {
+				t.Fatalf("wrapped HTTP/1.1 push accepted: %v", response)
 			}
 			if requests.Load() != 0 {
 				t.Errorf("origin received %d requests, want 0", requests.Load())
@@ -412,10 +423,10 @@ func TestTransportProxyOriginALPN(t *testing.T) {
 			if secure {
 				roots.AddCert(proxy.Certificate())
 			}
-			client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
+			client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
 			defer client.CloseIdleConnections()
 			response, err := client.Push(context.Background(), mockNotification())
-			if err != nil || response == nil || !response.Sent() {
+			if err != nil || response == nil || !response.Success() {
 				t.Fatalf("proxy push = %v, %v", response, err)
 			}
 			if protocols := <-offered; len(protocols) != 1 || protocols[0] != "h2" {
@@ -454,7 +465,7 @@ func TestTransportProxyDialBudget(t *testing.T) {
 			if secure {
 				roots.AddCert(proxy.Certificate())
 			}
-			client := apns.NewTokenClient(mockToken(), apns.WithDialTimeout(budget), apns.WithHost("https://"+origin.Addr().String()), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
+			client := mustTokenClient(t, mockToken(), apns.WithDialTimeout(budget), apns.WithHost("https://"+origin.Addr().String()), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
 			defer client.CloseIdleConnections()
 			started := time.Now()
 			if _, err := client.Push(context.Background(), mockNotification()); err == nil {
@@ -488,11 +499,11 @@ func TestTransportProxyConnectionOutlivesDialBudget(t *testing.T) {
 			if secure {
 				roots.AddCert(proxy.Certificate())
 			}
-			client := apns.NewTokenClient(mockToken(), apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}), apns.WithDialTimeout(budget))
+			client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}), apns.WithDialTimeout(budget))
 			defer client.CloseIdleConnections()
 			for i := range 2 {
 				response, err := client.Push(context.Background(), mockNotification())
-				if err != nil || response == nil || !response.Sent() {
+				if err != nil || response == nil || !response.Success() {
 					t.Fatalf("push %d = %v, %v", i, response, err)
 				}
 				time.Sleep(budget * 2)
@@ -530,12 +541,12 @@ func TestTransportZeroDialTimeout(t *testing.T) {
 				}
 			}
 			options = append(options, apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
-			client := apns.NewTokenClient(mockToken(), options...)
+			client := mustTokenClient(t, mockToken(), options...)
 			defer client.CloseIdleConnections()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			response, err := client.Push(ctx, mockNotification())
-			if err != nil || response == nil || !response.Sent() {
+			if err != nil || response == nil || !response.Success() {
 				t.Fatalf("zero-timeout push = %v, %v", response, err)
 			}
 		})
@@ -624,7 +635,7 @@ func TestTransportIdlePings(t *testing.T) {
 		pings <- nil
 		<-stop
 	}()
-	client := apns.NewTokenClient(mockToken(),
+	client := mustTokenClient(t, mockToken(),
 		apns.WithHost("https://"+listener.Addr().String()),
 		apns.WithTLSConfig(fixture.Client().Transport.(*http.Transport).TLSClientConfig),
 		apns.WithReadIdleTimeout(20*time.Millisecond),
@@ -668,7 +679,7 @@ func TestHTTPSProxyHasIndependentTLSVerification(t *testing.T) {
 	roots := origin.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs.Clone()
 	roots.AddCert(proxy.Certificate())
 	var verified atomic.Int32
-	client := apns.NewTokenClient(mockToken(), apns.WithHost(origin.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{
+	client := mustTokenClient(t, mockToken(), apns.WithHost(origin.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{
 		RootCAs:    roots,
 		ServerName: "example.com",
 		VerifyConnection: func(state tls.ConnectionState) error {
@@ -680,7 +691,7 @@ func TestHTTPSProxyHasIndependentTLSVerification(t *testing.T) {
 		},
 	}))
 	defer client.CloseIdleConnections()
-	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Sent() {
+	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Success() {
 		t.Fatalf("proxy push = %v, %v", response, err)
 	}
 	if verified.Load() != 1 {
@@ -703,9 +714,9 @@ func TestConstructorCertificateOverridesCallback(t *testing.T) {
 	config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 		return nil, errors.New("origin callback must not override constructor certificate")
 	}
-	client := apns.NewClient(server.TLS.Certificates[0], apns.WithHost(server.URL), apns.WithTLSConfig(config))
+	client := mustClient(t, server.TLS.Certificates[0], apns.WithHost(server.URL), apns.WithTLSConfig(config))
 	defer client.CloseIdleConnections()
-	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Sent() {
+	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Success() {
 		t.Fatalf("certificate push = %v, %v", response, err)
 	}
 	if config.GetClientCertificate == nil {
@@ -728,7 +739,7 @@ func TestTLSDialerNilResultsReturnError(t *testing.T) {
 					options = append(options, apns.WithProxy(http.ProxyURL(&url.URL{Scheme: "https", Host: "proxy.example.com:443"})))
 				}
 				options = append(options, apns.WithHost(apns.HostDevelopment))
-				client := apns.NewTokenClient(mockToken(), options...)
+				client := mustTokenClient(t, mockToken(), options...)
 				defer client.CloseIdleConnections()
 				_, err := client.Push(context.Background(), mockNotification())
 				if err == nil || !strings.Contains(err.Error(), "nil connection") {
@@ -754,9 +765,9 @@ func TestCustomHTTPClientOwnsCertificate(t *testing.T) {
 	transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	transport.TLSClientConfig.Certificates = server.TLS.Certificates
 	httpClient.Transport = transport
-	client := apns.NewClient(mockCert(), apns.WithHost(server.URL), apns.WithHTTPClient(httpClient))
+	client := mustClient(t, mockCert(), apns.WithHost(server.URL), apns.WithHTTPClient(httpClient))
 	defer client.CloseIdleConnections()
-	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Sent() {
+	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Success() {
 		t.Fatalf("custom certificate push = %v, %v", response, err)
 	}
 }

@@ -5,13 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/jaakkonakaza/apns2"
 	"github.com/jaakkonakaza/apns2/certificate"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	certPath := flag.String("cert", "", "Path to .p12 certificate file (Required)")
 	token := flag.String("token", "", "Push token (Required)")
 	topic := flag.String("topic", "", "Topic (Required)")
@@ -19,12 +24,12 @@ func main() {
 
 	if *certPath == "" || *token == "" || *topic == "" {
 		flag.PrintDefaults()
-		os.Exit(1)
+		return fmt.Errorf("required flags are missing")
 	}
 
 	cert, err := certificate.FromP12File(*certPath, "")
 	if err != nil {
-		log.Fatal("Cert Error:", err)
+		return fmt.Errorf("load certificate: %w", err)
 	}
 
 	notification := &apns2.Notification{}
@@ -38,11 +43,21 @@ func main() {
 		}
 	`)
 
-	client := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+	client, err := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
 	res, err := client.Push(context.Background(), notification)
 	if err != nil {
-		log.Fatal("Error:", err)
+		return fmt.Errorf("push notification: %w", err)
 	}
 
-	fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
+	if _, err := fmt.Printf("%v %v %v\n", res.StatusCode, res.APNSID, res.Reason); err != nil {
+		return err
+	}
+	if !res.Success() {
+		return fmt.Errorf("APNs rejected notification: %s", res.Reason)
+	}
+	return nil
 }

@@ -4,9 +4,10 @@
 // Apple issues provider certificates as .cer files; export the certificate
 // and its key from Keychain Access as a .p12 file to load them. Provider
 // certificates are valid for a year. The loaders reject certificates outside
-// their validity period with ErrCertificateExpired or ErrCertificateNotYetValid. A process that keeps running still needs a
-// renewed certificate before Leaf.NotAfter. Certificate connections support only a subset of push
-// types; token authentication supports all of them.
+// their validity period with ErrCertificateExpired or ErrCertificateNotYetValid.
+// A long-running process needs a renewed certificate before Leaf.NotAfter.
+// Certificate connections support only a subset of push types. Token
+// authentication supports all of them.
 package certificate
 
 import (
@@ -57,22 +58,8 @@ func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	// DecodeChain parses the key and certificates, but does not check that
-	// the leaf belongs to the private key. Reject an invalid pair at load time.
-	signer, ok := key.(crypto.Signer)
-	if !ok {
-		return tls.Certificate{}, ErrFailedToParsePrivateKey
-	}
-	publicKey, err := x509.MarshalPKIXPublicKey(signer.Public())
-	if err != nil {
+	if err := matchPrivateKey(cert, key); err != nil {
 		return tls.Certificate{}, err
-	}
-	certificateKey, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	if !bytes.Equal(publicKey, certificateKey) {
-		return tls.Certificate{}, ErrKeyMismatch
 	}
 	if err := checkValidity(cert); err != nil {
 		return tls.Certificate{}, err
@@ -89,53 +76,76 @@ func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
 	}, nil
 }
 
-// FromPemFile loads a certificate chain and matching private key from a combined
+// FromPEMFile loads a certificate chain and matching private key from a combined
 // PEM file. Password-protected PEM keys are unsupported.
-func FromPemFile(filename string) (tls.Certificate, error) {
+func FromPEMFile(filename string) (tls.Certificate, error) {
 	bytes, err := os.ReadFile(filename)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	return FromPemBytes(bytes)
+	return FromPEMBytes(bytes)
 }
 
-// FromPemBytes loads a certificate chain and matching private key from combined
+// FromPEMBytes loads a certificate chain and matching private key from combined
 // PEM data. It supports PKCS#1, PKCS#8, and SEC1 private keys.
-// Password-protected PEM keys are unsupported.
-func FromPemBytes(bytes []byte) (tls.Certificate, error) {
-	// Validate the same blocks tls.X509KeyPair uses: the first certificate is
-	// the leaf and the first private key must match it.
-	var leaf, key *pem.Block
-	for rest := bytes; ; {
+// The first certificate is the leaf, followed by any intermediate certificates.
+// The first private key must match the leaf. Password-protected PEM keys are unsupported.
+func FromPEMBytes(data []byte) (tls.Certificate, error) {
+	var certificates [][]byte
+	var keyBlock *pem.Block
+	for rest := data; ; {
 		var block *pem.Block
 		block, rest = pem.Decode(rest)
 		if block == nil {
 			break
 		}
-		if leaf == nil && block.Type == "CERTIFICATE" {
-			leaf = block
+		if block.Type == "CERTIFICATE" {
+			certificates = append(certificates, block.Bytes)
 		}
-		if key == nil && strings.HasSuffix(block.Type, "PRIVATE KEY") {
-			key = block
+		if keyBlock == nil && strings.HasSuffix(block.Type, "PRIVATE KEY") {
+			keyBlock = block
 		}
 	}
-	if leaf == nil {
+	if len(certificates) == 0 {
 		return tls.Certificate{}, ErrNoCertificate
 	}
-	if key == nil {
+	if keyBlock == nil {
 		return tls.Certificate{}, ErrNoPrivateKey
 	}
-	cert, err := x509.ParseCertificate(leaf.Bytes)
+	cert, err := x509.ParseCertificate(certificates[0])
 	if err != nil {
 		return tls.Certificate{}, ErrFailedToParseCertificate
 	}
 	if err := checkValidity(cert); err != nil {
 		return tls.Certificate{}, err
 	}
-	if _, err := parsePrivateKey(key.Bytes); err != nil {
+	key, err := parsePrivateKey(keyBlock.Bytes)
+	if err != nil {
 		return tls.Certificate{}, err
 	}
-	return tls.X509KeyPair(bytes, bytes)
+	if err := matchPrivateKey(cert, key); err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: certificates, PrivateKey: key, Leaf: cert}, nil
+}
+
+func matchPrivateKey(cert *x509.Certificate, key crypto.PrivateKey) error {
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return ErrFailedToParsePrivateKey
+	}
+	publicKey, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return err
+	}
+	certificateKey, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(publicKey, certificateKey) {
+		return ErrKeyMismatch
+	}
+	return nil
 }
 
 // checkValidity rejects a certificate outside its validity period. Apple's

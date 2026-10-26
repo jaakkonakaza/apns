@@ -10,6 +10,7 @@ import (
 	"encoding/json/v2"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -28,24 +29,80 @@ const (
 
 // Possible errors when parsing a .p8 file.
 var (
-	ErrAuthKeyNotPem   = errors.New("token: AuthKey must be a valid .p8 PEM file")
+	ErrAuthKeyNotPEM   = errors.New("token: AuthKey must be a valid .p8 PEM file")
 	ErrAuthKeyNotECDSA = errors.New("token: AuthKey must be of type ecdsa.PrivateKey")
 	ErrAuthKeyNil      = errors.New("token: AuthKey was nil")
 	ErrAuthKeyCurve    = errors.New("token: AuthKey must use the P-256 curve")
+	ErrKeyIDMissing    = errors.New("token: key ID is required")
+	ErrTeamIDMissing   = errors.New("token: team ID is required")
 )
 
+// Identity identifies the signing credentials independently of a cached bearer.
+// PublicKey is the SEC 1 uncompressed encoding of the P-256 public key.
+// Identity is comparable and can be used as a cache key.
+type Identity struct {
+	TeamID    string
+	KeyID     string
+	PublicKey [65]byte
+}
+
+// Snapshot contains a bearer and its matching issue time for persistence.
+type Snapshot struct {
+	Bearer   string
+	IssuedAt time.Time
+}
+
 // Token represents an Apple Provider Authentication Token (JSON Web Token).
-// Set AuthKey, KeyID, and TeamID before sharing a token and do not change them
-// during use. Share one Token per signing identity. Its methods are safe to
-// call concurrently.
+// Its signing identity is immutable. Share one Token per identity.
+// Its methods are safe to call concurrently. The zero value has no signing key.
 type Token struct {
 	mu       sync.Mutex
-	AuthKey  *ecdsa.PrivateKey
-	KeyID    string
-	TeamID   string
+	authKey  *ecdsa.PrivateKey
+	identity Identity
 	issuedAt int64
 	bearer   string
 	restored bool
+}
+
+// New validates and copies a signing key and its identifiers. It does not sign
+// a bearer until Bearer or Snapshot is called.
+func New(authKey *ecdsa.PrivateKey, keyID, teamID string) (*Token, error) {
+	if authKey == nil {
+		return nil, ErrAuthKeyNil
+	}
+	if authKey.Curve != elliptic.P256() {
+		return nil, ErrAuthKeyCurve
+	}
+	if keyID == "" {
+		return nil, ErrKeyIDMissing
+	}
+	if teamID == "" {
+		return nil, ErrTeamIDMissing
+	}
+	encoded, err := authKey.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("token: signing key: %w", err)
+	}
+	copied, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), encoded)
+	if err != nil {
+		return nil, fmt.Errorf("token: signing key: %w", err)
+	}
+	publicKey, err := copied.PublicKey.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("token: public key: %w", err)
+	}
+	identity := Identity{TeamID: teamID, KeyID: keyID}
+	copy(identity.PublicKey[:], publicKey)
+	return &Token{authKey: copied, identity: identity}, nil
+}
+
+// Identity returns the token's immutable signing identity. It returns an error
+// for a nil token or a token without a signing key.
+func (t *Token) Identity() (Identity, error) {
+	if t == nil || t.authKey == nil {
+		return Identity{}, ErrAuthKeyNil
+	}
+	return t.identity, nil
 }
 
 // AuthKeyFromFile loads a .p8 signing key from a local file and returns a
@@ -63,7 +120,7 @@ func AuthKeyFromFile(filename string) (*ecdsa.PrivateKey, error) {
 func AuthKeyFromBytes(bytes []byte) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(bytes)
 	if block == nil {
-		return nil, ErrAuthKeyNotPem
+		return nil, ErrAuthKeyNotPEM
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
@@ -81,14 +138,24 @@ func AuthKeyFromBytes(bytes []byte) (*ecdsa.PrivateKey, error) {
 // Bearer returns the cached token, refreshing it when necessary.
 // If signing fails, it returns an empty string and the signing error.
 func (t *Token) Bearer() (string, error) {
+	snapshot, err := t.Snapshot()
+	return snapshot.Bearer, err
+}
+
+// Snapshot returns a bearer and its matching issue time atomically, refreshing
+// the bearer when necessary. Persist this pair together and pass it to Restore.
+func (t *Token) Snapshot() (Snapshot, error) {
+	if t == nil || t.authKey == nil {
+		return Snapshot{}, ErrAuthKeyNil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.bearer == "" || t.expiredLocked() {
 		if err := t.generateLocked(); err != nil {
-			return "", err
+			return Snapshot{}, err
 		}
 	}
-	return t.bearer, nil
+	return Snapshot{Bearer: t.bearer, IssuedAt: time.Unix(t.issuedAt, 0)}, nil
 }
 
 // IssuedAt returns when the cached bearer was signed, or the zero time if
@@ -102,8 +169,8 @@ func (t *Token) IssuedAt() time.Time {
 	return time.Unix(t.issuedAt, 0)
 }
 
-// Restore caches a bearer signed earlier for the same AuthKey, KeyID and
-// TeamID, so a short-lived process can reuse it instead of signing a new one.
+// Restore caches a bearer signed earlier for the same signing identity, so a
+// short-lived process can reuse it instead of signing a new one.
 // APNs rejects provider token updates more often than every 20 minutes.
 // Bearer replaces the restored token once it expires. Restore does not verify
 // the bearer, and ignores an issue time in the future or older than
@@ -144,31 +211,31 @@ func (t *Token) expiredLocked() bool {
 }
 
 func (t *Token) generateLocked() error {
-	if t.AuthKey == nil {
+	if t.authKey == nil {
 		return ErrAuthKeyNil
 	}
-	if t.AuthKey.Curve != elliptic.P256() {
+	if t.authKey.Curve != elliptic.P256() {
 		return ErrAuthKeyCurve
 	}
 	issuedAt := time.Now().Unix()
 	header, err := json.Marshal(struct {
 		Algorithm string `json:"alg"`
 		KeyID     string `json:"kid"`
-	}{"ES256", t.KeyID})
+	}{"ES256", t.identity.KeyID})
 	if err != nil {
 		return err
 	}
 	claims, err := json.Marshal(struct {
 		Issuer   string `json:"iss"`
 		IssuedAt int64  `json:"iat"`
-	}{t.TeamID, issuedAt})
+	}{t.identity.TeamID, issuedAt})
 	if err != nil {
 		return err
 	}
 	encoding := base64.RawURLEncoding
 	signingString := encoding.EncodeToString(header) + "." + encoding.EncodeToString(claims)
 	digest := sha256.Sum256([]byte(signingString))
-	r, s, err := ecdsa.Sign(rand.Reader, t.AuthKey, digest[:])
+	r, s, err := ecdsa.Sign(rand.Reader, t.authKey, digest[:])
 	if err != nil {
 		return err
 	}

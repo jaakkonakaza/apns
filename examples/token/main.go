@@ -5,13 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/jaakkonakaza/apns2"
 	"github.com/jaakkonakaza/apns2/token"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	authKeyPath := flag.String("authKey", "", "Path to .p8 APNSAuthKey file (Required)")
 	deviceToken := flag.String("token", "", "Push token (Required)")
 	topic := flag.String("topic", "", "Topic (Required)")
@@ -21,18 +26,17 @@ func main() {
 
 	if *authKeyPath == "" || *deviceToken == "" || *topic == "" || *keyID == "" || *teamID == "" {
 		flag.PrintDefaults()
-		os.Exit(1)
+		return fmt.Errorf("required flags are missing")
 	}
 
 	authKey, err := token.AuthKeyFromFile(*authKeyPath)
 	if err != nil {
-		log.Fatal("token error:", err)
+		return fmt.Errorf("load signing key: %w", err)
 	}
 
-	token := &token.Token{
-		AuthKey: authKey,
-		KeyID:   *keyID,
-		TeamID:  *teamID,
+	provider, err := token.New(authKey, *keyID, *teamID)
+	if err != nil {
+		return err
 	}
 
 	notification := &apns2.Notification{}
@@ -46,11 +50,21 @@ func main() {
 		}
 	`)
 
-	client := apns2.NewTokenClient(token, apns2.WithHost(apns2.HostProduction))
+	client, err := apns2.NewTokenClient(provider, apns2.WithHost(apns2.HostProduction))
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
 	res, err := client.Push(context.Background(), notification)
 	if err != nil {
-		log.Fatal("Error:", err)
+		return fmt.Errorf("push notification: %w", err)
 	}
 
-	fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
+	if _, err := fmt.Printf("%v %v %v\n", res.StatusCode, res.APNSID, res.Reason); err != nil {
+		return err
+	}
+	if !res.Success() {
+		return fmt.Errorf("APNs rejected notification: %s", res.Reason)
+	}
+	return nil
 }
