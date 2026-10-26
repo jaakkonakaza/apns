@@ -74,6 +74,61 @@ func TestClientManagerConcurrentGetCreatesOneClient(t *testing.T) {
 	}
 }
 
+func TestClientManagerRetiresUnusedExpiredClients(t *testing.T) {
+	for _, auth := range []string{"certificate", "token"} {
+		for _, operation := range []string{"lookup", "cached lookup", "add", "length", "remove", "close idle"} {
+			t.Run(auth+"/"+operation, func(t *testing.T) {
+				manager := managerForTest(t, ManagerConfig{MaxAge: time.Hour})
+				cleanup := &managerCleanupTransport{onClose: func() { _ = manager.Len() }}
+				expired := managerTestClient(managerTestCertificate(1))
+				expired.httpClient = &http.Client{Transport: cleanup}
+				if auth == "token" {
+					expired.token = managerTestToken(t)
+				}
+				if err := manager.Add(expired); err != nil {
+					t.Fatal(err)
+				}
+				manager.mu.Lock()
+				manager.ll.Back().Value.(*managerItem).lastUsed = time.Now().Add(-2 * time.Hour)
+				manager.mu.Unlock()
+				other := managerTestClient(managerTestCertificate(2))
+				manager.factory = func(tls.Certificate) (*Client, error) { return other, nil }
+				if operation == "cached lookup" {
+					manager.mu.Lock()
+					manager.addLocked(certificateCacheKey(other.certificate, other.host), other, time.Now())
+					manager.mu.Unlock()
+				}
+				switch operation {
+				case "lookup", "cached lookup":
+					managerGet(t, manager, other.certificate)
+				case "add":
+					if err := manager.Add(other); err != nil {
+						t.Fatal(err)
+					}
+				case "length":
+					if got := manager.Len(); got != 0 {
+						t.Fatalf("expired cache length = %d", got)
+					}
+				case "remove":
+					manager.Remove(other.certificate)
+				case "close idle":
+					manager.CloseIdleConnections()
+				}
+				if got := cleanup.closed.Load(); got != 1 {
+					t.Fatalf("expired client cleanup calls = %d, want 1", got)
+				}
+				manager.mu.Lock()
+				defer manager.mu.Unlock()
+				for _, ele := range manager.cache {
+					if ele.Value.(*managerItem).client == expired {
+						t.Fatal("unused expired identity remains cached")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestClientManagerConcurrentEvictionKeepsCacheConsistent(t *testing.T) {
 	manager := managerForTest(t, ManagerConfig{MaxSize: 3})
 	var workers sync.WaitGroup
@@ -293,8 +348,12 @@ func TestClientManagerAddWinsOverPendingFactory(t *testing.T) {
 			if got := managerGet(t, manager, certificate); got != explicit {
 				t.Fatal("factory overwrote added client")
 			}
-			if explicitTransport.closed.Load() != 0 {
-				t.Error("new client closed")
+			wantClosed := int32(0)
+			if scenario == "refresh-same-client" {
+				wantClosed = 1
+			}
+			if got := explicitTransport.closed.Load(); got != wantClosed {
+				t.Errorf("explicit client cleanup calls = %d, want %d", got, wantClosed)
 			}
 			if scenario != "refresh-same-client" && unused.closed.Load() != 1 {
 				t.Errorf("unused cleanup calls = %d", unused.closed.Load())

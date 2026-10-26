@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns2/token"
 )
 
 func TestClientManagerConfiguration(t *testing.T) {
@@ -20,10 +21,48 @@ func TestClientManagerConfiguration(t *testing.T) {
 		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHost("")}},
 		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHTTPClient(&http.Client{})}},
 		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithHost(apns2.HostProduction)}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithTimeout(-time.Second)}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithDialTimeout(-time.Second)}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithReadIdleTimeout(-time.Second)}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithIdleConnTimeout(-time.Second)}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithTLSConfig(&tls.Config{MaxVersion: tls.VersionTLS11})}},
+		{Host: apns2.HostDevelopment, ClientOptions: []apns2.ClientOption{apns2.WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS12})}},
+		{Host: "http://localhost", Factory: func(tls.Certificate) (*apns2.Client, error) { return nil, nil }},
 	} {
 		if manager, err := apns2.NewClientManager(config); err == nil || manager != nil {
 			t.Fatalf("invalid config returned %v, %v", manager, err)
 		}
+	}
+}
+
+func TestClientManagerCustomFactoriesOwnTransportPolicy(t *testing.T) {
+	key, err := token.AuthKeyFromFile("token/testdata/authkey-valid.p8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := token.New(key, "key", "team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := apns2.NewClientManager(apns2.ManagerConfig{
+		Host:          "http://localhost",
+		ClientOptions: []apns2.ClientOption{apns2.WithTimeout(-time.Second)},
+		Factory: func(cert tls.Certificate) (*apns2.Client, error) {
+			return apns2.NewClient(cert, apns2.WithHost("http://localhost"), apns2.WithHTTPClient(&http.Client{}))
+		},
+		TokenFactory: func(provider *token.Token, host string) (*apns2.Client, error) {
+			return apns2.NewTokenClient(provider, apns2.WithHost(host), apns2.WithHTTPClient(&http.Client{}))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.CloseIdleConnections()
+	if _, err := manager.Get(mockCert()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.GetByToken(provider); err != nil {
+		t.Fatal(err)
 	}
 }
 

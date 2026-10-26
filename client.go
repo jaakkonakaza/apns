@@ -98,15 +98,28 @@ func clientConfigForOptions(options []ClientOption) (clientConfig, error) {
 	return config, nil
 }
 
-func newClient(tlsConfig *tls.Config, config clientConfig) (*Client, error) {
+func validateClientConfig(config clientConfig) error {
 	if err := validateHost(config.host, config.httpClient != nil); err != nil {
-		return nil, err
+		return err
 	}
 	if config.httpClient == nil && (config.timeout < 0 || config.dialTimeout < 0 || config.readIdleTimeout < 0 || config.idleConnTimeout < 0) {
-		return nil, errors.New("apns2: timeouts must not be negative")
+		return errors.New("apns2: timeouts must not be negative")
 	}
 	if config.httpClient != nil && config.transportWrapper != nil {
-		return nil, errors.New("apns2: WithTransportWrapper cannot be combined with WithHTTPClient")
+		return errors.New("apns2: WithTransportWrapper cannot be combined with WithHTTPClient")
+	}
+	if config.httpClient == nil && config.tlsConfig != nil {
+		cfg := config.tlsConfig
+		if cfg.MaxVersion != 0 && (cfg.MaxVersion < tls.VersionTLS12 || cfg.MinVersion > cfg.MaxVersion) {
+			return errors.New("apns2: incompatible TLS version limits")
+		}
+	}
+	return nil
+}
+
+func newClient(tlsConfig *tls.Config, config clientConfig) (*Client, error) {
+	if err := validateClientConfig(config); err != nil {
+		return nil, err
 	}
 	if config.tlsConfig != nil {
 		supplied := config.tlsConfig.Clone()
@@ -115,9 +128,6 @@ func newClient(tlsConfig *tls.Config, config clientConfig) (*Client, error) {
 			supplied.GetClientCertificate = nil
 		}
 		tlsConfig = supplied
-	}
-	if config.httpClient == nil && tlsConfig.MaxVersion != 0 && (tlsConfig.MaxVersion < tls.VersionTLS12 || tlsConfig.MinVersion > tlsConfig.MaxVersion) {
-		return nil, errors.New("apns2: incompatible TLS version limits")
 	}
 	client := &Client{host: strings.TrimRight(config.host, "/"), httpClient: config.httpClient}
 	if client.httpClient == nil {

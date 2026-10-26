@@ -28,7 +28,8 @@ type ManagerConfig struct {
 	// MaxSize limits cached clients. Zero means no limit.
 	MaxSize int
 
-	// MaxAge expires clients after this much time without use. Zero disables expiry.
+	// MaxAge expires clients after this much time without use. Cache operations
+	// retire expired entries. Zero disables expiry.
 	MaxAge time.Duration
 
 	// ClientOptions configure the default factories. Host is set by Host above.
@@ -104,12 +105,12 @@ func NewClientManager(config ManagerConfig) (*ClientManager, error) {
 	if clientConfig.hostSet && strings.TrimSuffix(clientConfig.host, "/") != config.Host {
 		return nil, errors.New("apns2: manager Host conflicts with WithHost")
 	}
-	if config.Factory == nil && config.TokenFactory == nil {
-		if err := validateHost(config.Host, false); err != nil {
+	clientConfig.host = config.Host
+	if config.Factory == nil || config.TokenFactory == nil {
+		if err := validateClientConfig(clientConfig); err != nil {
 			return nil, err
 		}
 	}
-	clientConfig.host = config.Host
 	if clientConfig.tlsConfig != nil {
 		clientConfig.tlsConfig = clientConfig.tlsConfig.Clone()
 	}
@@ -152,12 +153,16 @@ func (m *ClientManager) Add(client *Client) error {
 	}
 	m.initInternals()
 	m.mu.Lock()
-	retired := m.addLocked(key, client, time.Now())
+	now := time.Now()
+	retired := []*Client{m.addLocked(key, client, now)}
+	retired = append(retired, m.expireLocked(now)...)
 	if call := m.pending[key]; call != nil {
 		call.added = client
 	}
 	m.mu.Unlock()
-	closeClientIdleConnections(retired)
+	for _, old := range retired {
+		closeClientIdleConnections(old)
+	}
 	return nil
 }
 
@@ -196,29 +201,33 @@ func (m *ClientManager) Get(certificate tls.Certificate) (*Client, error) {
 func (m *ClientManager) get(key managerKey, factory func() (*Client, error)) (client *Client, err error) {
 	m.initInternals()
 	m.mu.Lock()
-	var stale *Client
+	now := time.Now()
+	expired := m.expireLocked(now)
 	if ele, hit := m.cache[key]; hit {
 		item := ele.Value.(*managerItem)
-		now := time.Now()
-		if m.maxAge == 0 || item.lastUsed.After(now.Add(-m.maxAge)) {
-			item.lastUsed = now
-			m.ll.MoveToFront(ele)
-			cached := item.client
-			m.mu.Unlock()
-			return cached, nil
+		item.lastUsed = now
+		m.ll.MoveToFront(ele)
+		cached := item.client
+		m.mu.Unlock()
+		for _, old := range expired {
+			closeClientIdleConnections(old)
 		}
-		stale = item.client
+		return cached, nil
 	}
 	if call, ok := m.pending[key]; ok {
 		m.mu.Unlock()
+		for _, old := range expired {
+			closeClientIdleConnections(old)
+		}
 		<-call.done
 		return call.client, call.err
 	}
 	call := &pendingClient{done: make(chan struct{})}
 	m.pending[key] = call
 	m.mu.Unlock()
-
-	completed := false
+	for _, old := range expired {
+		closeClientIdleConnections(old)
+	}
 	defer func() {
 		var retired []*Client
 		m.mu.Lock()
@@ -241,9 +250,6 @@ func (m *ClientManager) get(key managerKey, factory func() (*Client, error)) (cl
 			if call.err == nil {
 				call.err = ErrClientUnavailable
 			}
-			if ele, hit := m.cache[key]; completed && hit && stale != nil && ele.Value.(*managerItem).client == stale {
-				retired = append(retired, m.removeElementLocked(ele))
-			}
 		}
 		client, err = call.client, call.err
 		m.mu.Unlock()
@@ -262,7 +268,6 @@ func (m *ClientManager) get(key managerKey, factory func() (*Client, error)) (cl
 			call.err = errors.New("apns2: factory client does not match the requested identity and host")
 		}
 	}
-	completed = true
 	return call.client, call.err
 }
 
@@ -304,22 +309,26 @@ func (m *ClientManager) remove(key managerKey) bool {
 	if ele := m.cache[key]; ele != nil {
 		retired = m.removeElementLocked(ele)
 	}
+	expired := m.expireLocked(time.Now())
 	call := m.pending[key]
 	if call != nil {
 		call.removed = true
 		delete(m.pending, key)
 	}
 	m.mu.Unlock()
+	for _, old := range expired {
+		closeClientIdleConnections(old)
+	}
 	closeClientIdleConnections(retired)
 	return retired != nil || call != nil
 }
 
 // CloseIdleConnections closes idle connections on all cached clients.
-// It does not remove entries or interrupt requests already in use.
+// It retains unexpired entries and does not interrupt requests already in use.
 func (m *ClientManager) CloseIdleConnections() {
 	m.initInternals()
 	m.mu.Lock()
-	clients := make([]*Client, 0, len(m.cache))
+	clients := m.expireLocked(time.Now())
 	for _, ele := range m.cache {
 		clients = append(clients, ele.Value.(*managerItem).client)
 	}
@@ -329,12 +338,32 @@ func (m *ClientManager) CloseIdleConnections() {
 	}
 }
 
-// Len returns the number of cached clients.
+// Len returns the number of unexpired cached clients.
 func (m *ClientManager) Len() int {
 	m.initInternals()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.ll.Len()
+	expired := m.expireLocked(time.Now())
+	length := m.ll.Len()
+	m.mu.Unlock()
+	for _, old := range expired {
+		closeClientIdleConnections(old)
+	}
+	return length
+}
+
+func (m *ClientManager) expireLocked(now time.Time) []*Client {
+	var expired []*Client
+	if m.maxAge == 0 {
+		return expired
+	}
+	cutoff := now.Add(-m.maxAge)
+	for ele := m.ll.Back(); ele != nil; ele = m.ll.Back() {
+		if ele.Value.(*managerItem).lastUsed.After(cutoff) {
+			break
+		}
+		expired = append(expired, m.removeElementLocked(ele))
+	}
+	return expired
 }
 
 func (m *ClientManager) initInternals() {
