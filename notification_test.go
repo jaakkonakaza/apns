@@ -1,11 +1,11 @@
-package apns2_test
+package apns_test
 
 import (
 	"bytes"
 	"errors"
 	"testing"
 
-	"github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns"
 )
 
 func TestMarshalJSON(t *testing.T) {
@@ -21,7 +21,7 @@ func TestMarshalJSON(t *testing.T) {
 		}{"b"}, []byte(`{"a":"b"}`), nil},
 	}
 
-	notification := &apns2.Notification{}
+	notification := &apns.Notification{}
 
 	for _, scenario := range scenarios {
 		notification.Payload = scenario.in

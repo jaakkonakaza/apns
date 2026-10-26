@@ -1,4 +1,4 @@
-package apns2_test
+package apns_test
 
 import (
 	"context"
@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	apns "github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 type mockTransport struct {

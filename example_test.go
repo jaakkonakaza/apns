@@ -1,4 +1,4 @@
-package apns2_test
+package apns_test
 
 import (
 	"context"
@@ -7,10 +7,10 @@ import (
 	"log"
 	"time"
 
-	apns "github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/certificate"
-	"github.com/jaakkonakaza/apns2/payload"
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/certificate"
+	"github.com/jaakkonakaza/apns/payload"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 func ExampleNotification() {

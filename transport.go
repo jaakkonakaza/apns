@@ -1,4 +1,4 @@
-package apns2
+package apns
 
 import (
 	"context"
@@ -72,12 +72,12 @@ func (target pushTarget) dialProxy(ctx context.Context, timeout time.Duration, d
 type pushTargetKey struct{}
 
 // errNoPushTarget is returned if net/http dials without the context Push sets.
-var errNoPushTarget = errors.New("apns2: dial is missing its push target")
+var errNoPushTarget = errors.New("apns: dial is missing its push target")
 
 // ErrHTTP2Required is returned when the default transport would reach APNs
 // over anything other than HTTP/2 over TLS.
 // Use WithHTTPClient to supply a client with a different transport policy.
-var ErrHTTP2Required = errors.New("apns2: HTTP/2 over TLS is required")
+var ErrHTTP2Required = errors.New("apns: HTTP/2 over TLS is required")
 
 // newTransport returns a transport that only speaks HTTP/2 over TLS to APNs.
 // Origin handshakes offer only h2 and fail unless h2 is negotiated, including
@@ -206,7 +206,7 @@ func dialTLSContext(ctx context.Context, config clientConfig, network, addr stri
 		return nil, err
 	}
 	if conn == nil || reflect.ValueOf(conn).Kind() == reflect.Pointer && reflect.ValueOf(conn).IsNil() {
-		return nil, errors.New("apns2: TLS dialer returned a nil connection")
+		return nil, errors.New("apns: TLS dialer returned a nil connection")
 	}
 	return conn, nil
 }

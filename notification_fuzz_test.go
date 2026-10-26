@@ -1,4 +1,4 @@
-package apns2_test
+package apns_test
 
 import (
 	"bytes"
@@ -6,7 +6,7 @@ import (
 	"encoding/json/v2"
 	"testing"
 
-	apns "github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns"
 )
 
 func FuzzNotificationMarshalJSON(f *testing.F) {

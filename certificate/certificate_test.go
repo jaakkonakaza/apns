@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/jaakkonakaza/apns2/certificate"
+	"github.com/jaakkonakaza/apns/certificate"
 )
 
 // PKCS#12

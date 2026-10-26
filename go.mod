@@ -1,4 +1,4 @@
-module github.com/jaakkonakaza/apns2
+module github.com/jaakkonakaza/apns
 
 go 1.27.3
 

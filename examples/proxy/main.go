@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/certificate"
+	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/certificate"
 )
 
 func main() {
@@ -40,20 +40,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parse proxy URL: %w", err)
 	}
-	client, err := apns2.NewClient(certificate,
-		apns2.WithHost(apns2.HostProduction),
-		apns2.WithProxy(http.ProxyURL(proxyURL)),
-		apns2.WithIdleConnTimeout(60*time.Second),
+	client, err := apns.NewClient(certificate,
+		apns.WithHost(apns.HostProduction),
+		apns.WithProxy(http.ProxyURL(proxyURL)),
+		apns.WithIdleConnTimeout(60*time.Second),
 	)
 	if err != nil {
 		return err
 	}
 	defer client.CloseIdleConnections()
 
-	notification := &apns2.Notification{}
+	notification := &apns.Notification{}
 	notification.DeviceToken = *token
 	notification.Topic = *topic
-	notification.PushType = apns2.PushTypeAlert
+	notification.PushType = apns.PushTypeAlert
 	notification.Payload = []byte(`{
 			"aps" : {
 				"alert" : "Hello!"

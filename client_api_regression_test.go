@@ -1,4 +1,4 @@
-package apns2
+package apns
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 type apiRoundTripper func(*http.Request) (*http.Response, error)

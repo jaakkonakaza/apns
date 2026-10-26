@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/certificate"
+	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/certificate"
 )
 
 func main() {
@@ -32,10 +32,10 @@ func run() error {
 		return fmt.Errorf("load certificate: %w", err)
 	}
 
-	notification := &apns2.Notification{}
+	notification := &apns.Notification{}
 	notification.DeviceToken = *token
 	notification.Topic = *topic
-	notification.PushType = apns2.PushTypeAlert
+	notification.PushType = apns.PushTypeAlert
 	notification.Payload = []byte(`{
 			"aps" : {
 				"alert" : "Hello!"
@@ -43,7 +43,7 @@ func run() error {
 		}
 	`)
 
-	client, err := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+	client, err := apns.NewClient(cert, apns.WithHost(apns.HostProduction))
 	if err != nil {
 		return err
 	}

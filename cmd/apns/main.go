@@ -12,9 +12,9 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/certificate"
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/certificate"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 func main() {
@@ -23,8 +23,8 @@ func main() {
 	}
 }
 
-func run(args []string, input io.Reader, output, diagnostics io.Writer, options ...apns2.ClientOption) error {
-	flags := flag.NewFlagSet("apns2", flag.ContinueOnError)
+func run(args []string, input io.Reader, output, diagnostics io.Writer, options ...apns.ClientOption) error {
+	flags := flag.NewFlagSet("apns", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
 	var certificatePath, authKeyPath, keyID, teamID, topic, mode, pushType string
 	var priority int
@@ -35,11 +35,11 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 	flags.StringVar(&teamID, "team-id", "", "Developer team ID (required with auth-key-path).")
 	flags.StringVar(&topic, "topic", "", "APNs topic, typically the app bundle ID (required).")
 	flags.StringVar(&mode, "mode", "production", "APNs server: production or development.")
-	flags.StringVar(&pushType, "push-type", string(apns2.PushTypeAlert), "apns-push-type header; it must match the payload.")
+	flags.StringVar(&pushType, "push-type", string(apns.PushTypeAlert), "apns-push-type header; it must match the payload.")
 	flags.IntVar(&priority, "priority", 0, "APNs priority: 1, 5 or 10 (0 uses the push type default).")
 	flags.BoolVar(&version, "version", false, "Show application version.")
 	flags.Usage = func() {
-		_, _ = fmt.Fprintln(diagnostics, "Usage: apns2 --topic=TOPIC [authentication flags] [flags]\nReads STDIN lines formatted as: <DeviceToken> <APNs Payload>")
+		_, _ = fmt.Fprintln(diagnostics, "Usage: apns --topic=TOPIC [authentication flags] [flags]\nReads STDIN lines formatted as: <DeviceToken> <APNs Payload>")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -65,25 +65,25 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 		return fmt.Errorf("provide certificate-path or all of auth-key-path, key-id and team-id")
 	}
 	switch priority {
-	case 0, apns2.PriorityPowerSaving, apns2.PriorityLow, apns2.PriorityHigh:
+	case 0, apns.PriorityPowerSaving, apns.PriorityLow, apns.PriorityHigh:
 	default:
 		return fmt.Errorf("priority must be 0, 1, 5 or 10")
 	}
 	if mode != "production" && mode != "development" {
 		return fmt.Errorf("mode must be production or development")
 	}
-	host := apns2.HostProduction
+	host := apns.HostProduction
 	if mode == "development" {
-		host = apns2.HostDevelopment
+		host = apns.HostDevelopment
 	}
-	options = append([]apns2.ClientOption{apns2.WithHost(host)}, options...)
-	var client *apns2.Client
+	options = append([]apns.ClientOption{apns.WithHost(host)}, options...)
+	var client *apns.Client
 	if certificatePath != "" {
 		cert, err := certificate.FromPEMFile(certificatePath)
 		if err != nil {
 			return fmt.Errorf("load certificate %q: %w", certificatePath, err)
 		}
-		client, err = apns2.NewClient(cert, options...)
+		client, err = apns.NewClient(cert, options...)
 		if err != nil {
 			return err
 		}
@@ -96,7 +96,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 		if err != nil {
 			return err
 		}
-		client, err = apns2.NewTokenClient(provider, options...)
+		client, err = apns.NewTokenClient(provider, options...)
 		if err != nil {
 			return err
 		}
@@ -110,7 +110,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 		if !ok || deviceToken == "" || payload == "" {
 			return fmt.Errorf("expected <DeviceToken> <APNs Payload>")
 		}
-		res, err := client.Push(context.Background(), &apns2.Notification{DeviceToken: deviceToken, Topic: topic, PushType: apns2.PushType(pushType), Priority: priority, Payload: payload})
+		res, err := client.Push(context.Background(), &apns.Notification{DeviceToken: deviceToken, Topic: topic, PushType: apns.PushType(pushType), Priority: priority, Payload: payload})
 		if err != nil {
 			return err
 		}

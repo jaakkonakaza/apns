@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jaakkonakaza/apns2/certificate"
+	"github.com/jaakkonakaza/apns/certificate"
 )
 
 func FuzzFromPEMBytes(f *testing.F) {

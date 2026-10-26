@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns"
 )
 
 func TestHelpAndVersion(t *testing.T) {
@@ -80,8 +80,8 @@ func TestCLISend(t *testing.T) {
 
 	var output bytes.Buffer
 	args := []string{"--certificate-path=../../certificate/testdata/certificate-valid.pem", "--topic=com.example"}
-	if err := run(args, strings.NewReader("aabbcc "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard, apns2.WithHost(server.URL),
-		apns2.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
+	if err := run(args, strings.NewReader("aabbcc "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard, apns.WithHost(server.URL),
+		apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "200: ''\n" {
@@ -119,7 +119,7 @@ func TestTokenAuthenticationAndPriority(t *testing.T) {
 			defer server.Close()
 			args := []string{"--auth-key-path=../../token/testdata/authkey-valid.p8", "--key-id=KEY123", "--team-id=TEAM123", "--topic=com.example", "--push-type=" + tc.pushType, "--priority=" + tc.priority}
 			var output bytes.Buffer
-			if err := run(args, strings.NewReader("aabbcc {}\n"), &output, io.Discard, apns2.WithHost(server.URL), apns2.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
+			if err := run(args, strings.NewReader("aabbcc {}\n"), &output, io.Discard, apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
 				t.Fatal(err)
 			}
 			if got := output.String(); got != "200: ''\n" {
@@ -182,7 +182,7 @@ func TestCLIReportsRejectedNotifications(t *testing.T) {
 	args := []string{"--auth-key-path=../../token/testdata/authkey-valid.p8", "--key-id=KEY123", "--team-id=TEAM123", "--topic=com.example"}
 	var output bytes.Buffer
 	err := run(args, strings.NewReader("aabbcc {}\naabbcc {}\n"), &output, io.Discard,
-		apns2.WithHost(server.URL), apns2.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
+		apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
 	if err == nil || err.Error() != "APNs rejected 1 of 2 notifications" {
 		t.Fatalf("run error = %v", err)
 	}

@@ -1,6 +1,9 @@
-# APNS/2
+# apns
 
 A Go client for sending Apple Push Notification service (APNs) notifications over HTTP/2.
+
+This is a prerelease. The API may change before `v1.0.0`.
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Features
 
@@ -14,10 +17,10 @@ A Go client for sending Apple Push Notification service (APNs) notifications ove
 ## Install
 
 - Make sure you have [Go 1.27.3 or later](https://go.dev/doc/install) installed.
-- Add apns2 to your Go module:
+- Add apns to your Go module:
 
 ```sh
-go get github.com/jaakkonakaza/apns2
+go get github.com/jaakkonakaza/apns@v1.0.0-beta.1
 ```
 
 To run the test suite from this repository:
@@ -55,8 +58,8 @@ import (
   "fmt"
   "log"
 
-  "github.com/jaakkonakaza/apns2"
-  "github.com/jaakkonakaza/apns2/token"
+  "github.com/jaakkonakaza/apns"
+  "github.com/jaakkonakaza/apns/token"
 )
 
 func main() {
@@ -70,15 +73,15 @@ func main() {
   }
 
   // Use HostDevelopment for builds installed directly from Xcode.
-  client, err := apns2.NewTokenClient(provider, apns2.WithHost(apns2.HostProduction))
+  client, err := apns.NewTokenClient(provider, apns.WithHost(apns.HostProduction))
   if err != nil {
     log.Fatal(err)
   }
   defer client.CloseIdleConnections()
-  res, err := client.Push(context.Background(), &apns2.Notification{
+  res, err := client.Push(context.Background(), &apns.Notification{
     DeviceToken: "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7",
     Topic:       "com.example.app",
-    PushType:    apns2.PushTypeAlert,
+    PushType:    apns.PushTypeAlert,
     Payload:     []byte(`{"aps":{"alert":"Hello!"}}`), // See Payload section below
   })
   if err != nil {
@@ -109,7 +112,7 @@ cert, err := certificate.FromP12File("cert.p12", "password")
 if err != nil {
   log.Fatal(err)
 }
-client, err := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+client, err := apns.NewClient(cert, apns.WithHost(apns.HostProduction))
 if err != nil {
   log.Fatal(err)
 }
@@ -124,10 +127,10 @@ At a minimum, a _Notification_ needs a _DeviceToken_, a _Topic_, a _PushType_
 and a _Payload_.
 
 ```go
-notification := &apns2.Notification{
+notification := &apns.Notification{
   DeviceToken: "11aa01229f15f0f0c52029d8cf8cd0aeaf2365fe4cebc4af26cd6d76b7919ef7",
   Topic:       "com.example.app",
-  PushType:    apns2.PushTypeAlert,
+  PushType:    apns.PushTypeAlert,
   Payload:     []byte(`{"aps":{"alert":"Hello!"}}`),
 }
 ```
@@ -137,7 +140,7 @@ You can also set an optional _APNSID_, _Expiration_ or _Priority_.
 ```go
 notification.APNSID = "40636a2c-c093-493e-936a-2a4333c06dea"
 notification.Expiration = time.Now()
-notification.Priority = apns2.PriorityLow
+notification.Priority = apns.PriorityLow
 ```
 
 Set the topic suffix required by the push type. Background notifications default
@@ -169,13 +172,13 @@ payload := payload.NewPayload().
   Timestamp(time.Now()).
   StaleDate(time.Now().Add(5*time.Minute))
 
-notification.PushType = apns2.PushTypeLiveActivity
+notification.PushType = apns.PushTypeLiveActivity
 notification.Topic = "com.example.app.push-type.liveactivity"
-notification.Priority = apns2.PriorityLow
+notification.Priority = apns.PriorityLow
 notification.Payload = payload
 ```
 
-Refer to the [payload](https://pkg.go.dev/github.com/jaakkonakaza/apns2/payload) docs for more info.
+Refer to the [payload](https://pkg.go.dev/github.com/jaakkonakaza/apns/payload) docs for more info.
 
 ## Broadcast notifications and channels
 
@@ -184,16 +187,16 @@ creation, inspection, listing, and deletion. Select an endpoint pair at
 construction:
 
 ```go
-broadcast, err := apns2.NewBroadcastTokenClient(provider,
-  apns2.DevelopmentBroadcastEndpoints())
+broadcast, err := apns.NewBroadcastTokenClient(provider,
+  apns.DevelopmentBroadcastEndpoints())
 if err != nil {
   log.Fatal(err)
 }
 defer broadcast.CloseIdleConnections()
 
 channel, err := broadcast.CreateChannel(ctx,
-  &apns2.ChannelRequest{BundleID: "com.example.app"},
-  apns2.MessageStorageNone)
+  &apns.ChannelRequest{BundleID: "com.example.app"},
+  apns.MessageStorageNone)
 if err != nil {
   log.Fatal(err)
 }
@@ -251,11 +254,11 @@ present. Its presence is not assumed, and the library does not choose a delay.
 Configure each client when creating it:
 
 ```go
-client, err := apns2.NewTokenClient(authToken,
-  apns2.WithHost(apns2.HostProduction),
-  apns2.WithTimeout(30*time.Second),
-  apns2.WithDialTimeout(5*time.Second),
-  apns2.WithReadIdleTimeout(15*time.Second),
+client, err := apns.NewTokenClient(authToken,
+  apns.WithHost(apns.HostProduction),
+  apns.WithTimeout(30*time.Second),
+  apns.WithDialTimeout(5*time.Second),
+  apns.WithReadIdleTimeout(15*time.Second),
 )
 if err != nil {
   log.Fatal(err)
@@ -290,8 +293,8 @@ keyed by team, key ID, public key, and host. Reuse the returned client across
 pushes.
 
 ```go
-manager, err := apns2.NewClientManager(apns2.ManagerConfig{
-  Host: apns2.HostProduction,
+manager, err := apns.NewClientManager(apns.ManagerConfig{
+  Host: apns.HostProduction,
   MaxSize: 64,
 })
 if err != nil {
@@ -319,15 +322,15 @@ interrupting active requests. Zero cache size means no size limit.
 Install the command line tool:
 
 ```sh
-go install github.com/jaakkonakaza/apns2/cmd/apns2@latest
+go install github.com/jaakkonakaza/apns/cmd/apns@v1.0.0-beta.1
 ```
 
-From a checkout, use `go install ./cmd/apns2`. Usage:
+From a checkout, use `go install ./cmd/apns`. Usage:
 
 ```sh
-apns2 --help
-apns2 --certificate-path=certificate.pem --topic=com.example.app --mode=production
-apns2 --auth-key-path=AuthKey.p8 --key-id=KEY_ID --team-id=TEAM_ID --topic=com.example.app --push-type=background --priority=5
+apns --help
+apns --certificate-path=certificate.pem --topic=com.example.app --mode=production
+apns --auth-key-path=AuthKey.p8 --key-id=KEY_ID --team-id=TEAM_ID --topic=com.example.app --push-type=background --priority=5
 ```
 
 The CLI reads `<DeviceToken> <APNs Payload>` lines from STDIN and prints the
@@ -338,6 +341,10 @@ Choose certificate authentication or supply all three token authentication flags
 Priority 0 uses the push type's default. The CLI prints every APNs response and
 returns a failure status if any notification is rejected. Transport, input, or
 output errors stop the batch immediately.
+
+## Acknowledgments
+
+Derived from [sideshow/apns2](https://github.com/sideshow/apns2).
 
 ## License
 

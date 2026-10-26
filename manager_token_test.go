@@ -1,4 +1,4 @@
-package apns2
+package apns
 
 import (
 	"crypto/ecdsa"
@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 func managerSigningKey(t *testing.T) *ecdsa.PrivateKey {

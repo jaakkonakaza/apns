@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/jaakkonakaza/apns2/payload"
+	"github.com/jaakkonakaza/apns/payload"
 )
 
 func FuzzPayloadSerialization(f *testing.F) {

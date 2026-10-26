@@ -1,4 +1,4 @@
-package apns2_test
+package apns_test
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	apns "github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns"
 )
 
 func TestTransportAuthenticationAndReuse(t *testing.T) {

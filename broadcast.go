@@ -1,4 +1,4 @@
-package apns2
+package apns
 
 import (
 	"bytes"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 // Broadcast push and channel management endpoints.
@@ -119,13 +119,13 @@ func broadcastConfig(endpoints BroadcastEndpoints, options []ClientOption) (clie
 		return clientConfig{}, BroadcastEndpoints{}, err
 	}
 	if config.hostSet {
-		return clientConfig{}, BroadcastEndpoints{}, errors.New("apns2: use BroadcastEndpoints instead of WithHost for broadcast clients")
+		return clientConfig{}, BroadcastEndpoints{}, errors.New("apns: use BroadcastEndpoints instead of WithHost for broadcast clients")
 	}
 	if err := validateHost(endpoints.Push, config.httpClient != nil); err != nil {
-		return clientConfig{}, BroadcastEndpoints{}, fmt.Errorf("apns2: broadcast push endpoint: %w", err)
+		return clientConfig{}, BroadcastEndpoints{}, fmt.Errorf("apns: broadcast push endpoint: %w", err)
 	}
 	if err := validateHost(endpoints.Channels, config.httpClient != nil); err != nil {
-		return clientConfig{}, BroadcastEndpoints{}, fmt.Errorf("apns2: channel endpoint: %w", err)
+		return clientConfig{}, BroadcastEndpoints{}, fmt.Errorf("apns: channel endpoint: %w", err)
 	}
 	endpoints.Push = strings.TrimRight(endpoints.Push, "/")
 	endpoints.Channels = strings.TrimRight(endpoints.Channels, "/")
@@ -185,17 +185,17 @@ func (r *BroadcastResponse) Success() bool {
 // Push sends n to every device subscribed to its channel.
 func (c *BroadcastClient) Push(ctx context.Context, n *BroadcastNotification) (*BroadcastResponse, error) {
 	if n == nil {
-		return nil, errors.New("apns2: broadcast notification is nil")
+		return nil, errors.New("apns: broadcast notification is nil")
 	}
 	if n.ChannelID == "" {
-		return nil, errors.New("apns2: channel ID is empty")
+		return nil, errors.New("apns: channel ID is empty")
 	}
 	priority := n.Priority
 	if priority == 0 {
 		priority = PriorityHigh
 	}
 	if priority != PriorityHigh && priority != PriorityLow && priority != PriorityPowerSaving {
-		return nil, errors.New("apns2: invalid broadcast priority")
+		return nil, errors.New("apns: invalid broadcast priority")
 	}
 	payload, err := marshalPayload(n.Payload, 5120)
 	if err != nil {
@@ -270,7 +270,7 @@ type ChannelResponse struct {
 // the channel ID. An app can keep up to 10,000 channels in each environment.
 func (c *BroadcastClient) CreateChannel(ctx context.Context, r *ChannelRequest, policy MessageStoragePolicy) (*ChannelResponse, error) {
 	if policy != MessageStorageNone && policy != MessageStorageMostRecent {
-		return nil, errors.New("apns2: invalid message storage policy")
+		return nil, errors.New("apns: invalid message storage policy")
 	}
 	body, err := json.Marshal(struct {
 		Policy   MessageStoragePolicy `json:"message-storage-policy"`
@@ -300,13 +300,13 @@ func (c *BroadcastClient) ListChannels(ctx context.Context, r *ChannelRequest) (
 
 func (c *BroadcastClient) channelRequest(ctx context.Context, method string, r *ChannelRequest, needsChannel, list bool, body []byte) (*ChannelResponse, error) {
 	if r == nil {
-		return nil, errors.New("apns2: channel request is nil")
+		return nil, errors.New("apns: channel request is nil")
 	}
 	channelID := ""
 	if needsChannel {
 		channelID = r.ChannelID
 		if channelID == "" {
-			return nil, errors.New("apns2: channel ID is empty")
+			return nil, errors.New("apns: channel ID is empty")
 		}
 	}
 	suffix := "/channels"
@@ -321,13 +321,13 @@ const maxChannelResponseBytes = 4 << 20
 
 func (c *BroadcastClient) request(ctx context.Context, host, method, prefix, bundleID, suffix, requestID, channelID string, body []byte, headers func(*http.Request)) (*ChannelResponse, error) {
 	if host == "" {
-		return nil, errors.New("apns2: broadcast or channel host is not set")
+		return nil, errors.New("apns: broadcast or channel host is not set")
 	}
 	if bundleID == "" {
-		return nil, errors.New("apns2: bundle ID is empty")
+		return nil, errors.New("apns: bundle ID is empty")
 	}
 	if requestID != "" && !canonicalUUID(requestID) {
-		return nil, errors.New("apns2: apns-request-id must be a canonical 8-4-4-4-12 UUID")
+		return nil, errors.New("apns: apns-request-id must be a canonical 8-4-4-4-12 UUID")
 	}
 	req, err := http.NewRequestWithContext(ctx, method, host+prefix+url.PathEscape(bundleID)+suffix, bytes.NewReader(body))
 	if err != nil {

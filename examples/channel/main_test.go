@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaakkonakaza/apns2"
+	"github.com/jaakkonakaza/apns"
 )
 
-type pushFunc func(context.Context, *apns2.Notification) (*apns2.Response, error)
+type pushFunc func(context.Context, *apns.Notification) (*apns.Response, error)
 
-func (f pushFunc) Push(ctx context.Context, n *apns2.Notification) (*apns2.Response, error) {
+func (f pushFunc) Push(ctx context.Context, n *apns.Notification) (*apns.Response, error) {
 	return f(ctx, n)
 }
 
@@ -25,7 +25,7 @@ func TestConcurrentSendingBoundsWorkAndPreservesOutcomes(t *testing.T) {
 	started := make(chan struct{}, 2)
 	var active, maximum atomic.Int32
 	transportError := errors.New("connection failed")
-	client := pushFunc(func(_ context.Context, n *apns2.Notification) (*apns2.Response, error) {
+	client := pushFunc(func(_ context.Context, n *apns.Notification) (*apns.Response, error) {
 		current := active.Add(1)
 		defer active.Add(-1)
 		for old := maximum.Load(); current > old; old = maximum.Load() {
@@ -40,15 +40,15 @@ func TestConcurrentSendingBoundsWorkAndPreservesOutcomes(t *testing.T) {
 		<-gate
 		switch n.CollapseID {
 		case "2":
-			return &apns2.Response{StatusCode: 403, Reason: apns2.ReasonInvalidProviderToken}, nil
+			return &apns.Response{StatusCode: 403, Reason: apns.ReasonInvalidProviderToken}, nil
 		case "3":
 			return nil, transportError
 		default:
-			return &apns2.Response{StatusCode: 200}, nil
+			return &apns.Response{StatusCode: 200}, nil
 		}
 	})
-	results := sendNotifications(context.Background(), client, 8, 2, func(i int) *apns2.Notification {
-		return &apns2.Notification{CollapseID: strconv.Itoa(i)}
+	results := sendNotifications(context.Background(), client, 8, 2, func(i int) *apns.Notification {
+		return &apns.Notification{CollapseID: strconv.Itoa(i)}
 	})
 	for range 2 {
 		select {
@@ -88,7 +88,7 @@ func TestCancelledSendingStopsWorkers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := make(chan struct{}, 1)
-	client := pushFunc(func(ctx context.Context, _ *apns2.Notification) (*apns2.Response, error) {
+	client := pushFunc(func(ctx context.Context, _ *apns.Notification) (*apns.Response, error) {
 		select {
 		case started <- struct{}{}:
 		default:
@@ -96,8 +96,8 @@ func TestCancelledSendingStopsWorkers(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	results := sendNotifications(ctx, client, 100, 1, func(int) *apns2.Notification {
-		return &apns2.Notification{}
+	results := sendNotifications(ctx, client, 100, 1, func(int) *apns.Notification {
+		return &apns.Notification{}
 	})
 	<-started
 	cancel()

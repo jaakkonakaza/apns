@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jaakkonakaza/apns2/payload"
+	"github.com/jaakkonakaza/apns/payload"
 )
 
 type activityState struct {

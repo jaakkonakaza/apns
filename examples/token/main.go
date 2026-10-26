@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 func main() {
@@ -39,10 +39,10 @@ func run() error {
 		return err
 	}
 
-	notification := &apns2.Notification{}
+	notification := &apns.Notification{}
 	notification.DeviceToken = *deviceToken
 	notification.Topic = *topic
-	notification.PushType = apns2.PushTypeAlert
+	notification.PushType = apns.PushTypeAlert
 	notification.Payload = []byte(`{
 			"aps" : {
 				"alert" : "Hello!"
@@ -50,7 +50,7 @@ func run() error {
 		}
 	`)
 
-	client, err := apns2.NewTokenClient(provider, apns2.WithHost(apns2.HostProduction))
+	client, err := apns.NewTokenClient(provider, apns.WithHost(apns.HostProduction))
 	if err != nil {
 		return err
 	}

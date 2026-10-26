@@ -10,9 +10,9 @@ import (
 	"os/signal"
 	"sync"
 
-	"github.com/jaakkonakaza/apns2"
-	"github.com/jaakkonakaza/apns2/certificate"
-	"github.com/jaakkonakaza/apns2/payload"
+	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/certificate"
+	"github.com/jaakkonakaza/apns/payload"
 )
 
 func main() {
@@ -44,7 +44,7 @@ func run(ctx context.Context, args []string, output, diagnostics io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("load certificate: %w", err)
 	}
-	client, err := apns2.NewClient(cert, apns2.WithHost(apns2.HostProduction))
+	client, err := apns.NewClient(cert, apns.WithHost(apns.HostProduction))
 	if err != nil {
 		return err
 	}
@@ -52,11 +52,11 @@ func run(ctx context.Context, args []string, output, diagnostics io.Writer) erro
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	results := sendNotifications(ctx, client, *count, min(*workers, *count), func(i int) *apns2.Notification {
-		return &apns2.Notification{
+	results := sendNotifications(ctx, client, *count, min(*workers, *count), func(i int) *apns.Notification {
+		return &apns.Notification{
 			DeviceToken: *deviceToken,
 			Topic:       *topic,
-			PushType:    apns2.PushTypeAlert,
+			PushType:    apns.PushTypeAlert,
 			Payload:     payload.NewPayload().Alert(fmt.Sprintf("Hello! %d", i)),
 		}
 	})
@@ -92,18 +92,18 @@ func run(ctx context.Context, args []string, output, diagnostics io.Writer) erro
 }
 
 type pusher interface {
-	Push(context.Context, *apns2.Notification) (*apns2.Response, error)
+	Push(context.Context, *apns.Notification) (*apns.Response, error)
 }
 
 type sendResult struct {
 	Index    int
-	Response *apns2.Response
+	Response *apns.Response
 	Err      error
 }
 
 // sendNotifications bounds work and buffered results by the worker count.
 // The caller drains results or cancels ctx before returning.
-func sendNotifications(ctx context.Context, client pusher, count, workers int, notification func(int) *apns2.Notification) <-chan sendResult {
+func sendNotifications(ctx context.Context, client pusher, count, workers int, notification func(int) *apns.Notification) <-chan sendResult {
 	jobs := make(chan int)
 	results := make(chan sendResult, workers)
 	var pending sync.WaitGroup

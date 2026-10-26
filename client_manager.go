@@ -1,4 +1,4 @@
-package apns2
+package apns
 
 import (
 	"container/list"
@@ -10,14 +10,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 // ErrClientRemoved means an entry was removed while its client was being built.
-var ErrClientRemoved = errors.New("apns2: client removed during construction")
+var ErrClientRemoved = errors.New("apns: client removed during construction")
 
 // ErrClientUnavailable means a factory is absent or returned no client.
-var ErrClientUnavailable = errors.New("apns2: client factory returned no client")
+var ErrClientUnavailable = errors.New("apns: client factory returned no client")
 
 // ManagerConfig configures a cache and its client factories.
 // Set configuration before calling NewClientManager. Later changes do not affect it.
@@ -93,17 +93,17 @@ func NewClientManager(config ManagerConfig) (*ClientManager, error) {
 	}
 	config.Host = strings.TrimSuffix(config.Host, "/")
 	if config.MaxSize < 0 || config.MaxAge < 0 {
-		return nil, errors.New("apns2: cache limits must not be negative")
+		return nil, errors.New("apns: cache limits must not be negative")
 	}
 	clientConfig, err := clientConfigForOptions(config.ClientOptions)
 	if err != nil {
 		return nil, err
 	}
 	if clientConfig.httpClient != nil {
-		return nil, errors.New("apns2: manager ClientOptions cannot include WithHTTPClient, use a per-identity factory")
+		return nil, errors.New("apns: manager ClientOptions cannot include WithHTTPClient, use a per-identity factory")
 	}
 	if clientConfig.hostSet && strings.TrimSuffix(clientConfig.host, "/") != config.Host {
-		return nil, errors.New("apns2: manager Host conflicts with WithHost")
+		return nil, errors.New("apns: manager Host conflicts with WithHost")
 	}
 	clientConfig.host = config.Host
 	if config.Factory == nil || config.TokenFactory == nil {
@@ -138,10 +138,10 @@ func (m *ClientManager) Host() string { return m.host }
 // Add stores a configured client for this manager's host and signing identity.
 func (m *ClientManager) Add(client *Client) error {
 	if client == nil {
-		return errors.New("apns2: client is nil")
+		return errors.New("apns: client is nil")
 	}
 	if client.host != m.host {
-		return errors.New("apns2: client host does not match manager host")
+		return errors.New("apns: client host does not match manager host")
 	}
 	key := certificateCacheKey(client.certificate, client.host)
 	if client.token != nil {
@@ -265,7 +265,7 @@ func (m *ClientManager) get(key managerKey, factory func() (*Client, error)) (cl
 			actual, call.err = tokenCacheKey(call.client.token, call.client.host)
 		}
 		if call.err == nil && actual != key {
-			call.err = errors.New("apns2: factory client does not match the requested identity and host")
+			call.err = errors.New("apns: factory client does not match the requested identity and host")
 		}
 	}
 	return call.client, call.err
@@ -398,7 +398,7 @@ func certificateCacheKey(certificate tls.Certificate, host string) managerKey {
 func tokenCacheKey(t *token.Token, host string) (managerKey, error) {
 	identity, err := t.Identity()
 	if err != nil {
-		return managerKey{}, fmt.Errorf("apns2: token identity: %w", err)
+		return managerKey{}, fmt.Errorf("apns: token identity: %w", err)
 	}
 	return managerKey{tokenAuth: true, token: identity, host: host}, nil
 }

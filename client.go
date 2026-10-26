@@ -1,6 +1,6 @@
-// Package apns2 is a Go client for sending Apple Push Notification service
+// Package apns is a Go client for sending Apple Push Notification service
 // (APNs) notifications over HTTP/2.
-package apns2
+package apns
 
 import (
 	"bytes"
@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaakkonakaza/apns2/token"
+	"github.com/jaakkonakaza/apns/token"
 )
 
 // Apple HTTP/2 Development & Production urls. APNs also accepts port 2197,
@@ -52,7 +52,7 @@ func NewClient(certificate tls.Certificate, options ...ClientOption) (*Client, e
 
 func newCertificateClient(certificate tls.Certificate, config clientConfig) (*Client, error) {
 	if config.httpClient == nil && (len(certificate.Certificate) == 0 || certificate.PrivateKey == nil) {
-		return nil, errors.New("apns2: certificate and private key are required")
+		return nil, errors.New("apns: certificate and private key are required")
 	}
 	client, err := newClient(&tls.Config{Certificates: []tls.Certificate{certificate}}, config)
 	if err != nil {
@@ -91,7 +91,7 @@ func clientConfigForOptions(options []ClientOption) (clientConfig, error) {
 	config := defaultClientConfig()
 	for _, option := range options {
 		if option == nil {
-			return clientConfig{}, errors.New("apns2: client option is nil")
+			return clientConfig{}, errors.New("apns: client option is nil")
 		}
 		option(&config)
 	}
@@ -103,15 +103,15 @@ func validateClientConfig(config clientConfig) error {
 		return err
 	}
 	if config.httpClient == nil && (config.timeout < 0 || config.dialTimeout < 0 || config.readIdleTimeout < 0 || config.idleConnTimeout < 0) {
-		return errors.New("apns2: timeouts must not be negative")
+		return errors.New("apns: timeouts must not be negative")
 	}
 	if config.httpClient != nil && config.transportWrapper != nil {
-		return errors.New("apns2: WithTransportWrapper cannot be combined with WithHTTPClient")
+		return errors.New("apns: WithTransportWrapper cannot be combined with WithHTTPClient")
 	}
 	if config.httpClient == nil && config.tlsConfig != nil {
 		cfg := config.tlsConfig
 		if cfg.MaxVersion != 0 && (cfg.MaxVersion < tls.VersionTLS12 || cfg.MinVersion > cfg.MaxVersion) {
-			return errors.New("apns2: incompatible TLS version limits")
+			return errors.New("apns: incompatible TLS version limits")
 		}
 	}
 	return nil
@@ -136,7 +136,7 @@ func newClient(tlsConfig *tls.Config, config clientConfig) (*Client, error) {
 		if config.transportWrapper != nil {
 			roundTripper = config.transportWrapper(transport)
 			if roundTripper == nil {
-				return nil, errors.New("apns2: transport wrapper returned nil")
+				return nil, errors.New("apns: transport wrapper returned nil")
 			}
 		}
 		client.ownedTransport = transport
@@ -147,14 +147,14 @@ func newClient(tlsConfig *tls.Config, config clientConfig) (*Client, error) {
 
 func validateHost(host string, allowHTTP bool) error {
 	if host == "" {
-		return errors.New("apns2: host is required")
+		return errors.New("apns: host is required")
 	}
 	endpoint, err := url.Parse(host)
 	if err != nil {
-		return fmt.Errorf("apns2: invalid host: %w", err)
+		return fmt.Errorf("apns: invalid host: %w", err)
 	}
 	if endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || strings.Contains(host, "#") || endpoint.Fragment != "" || endpoint.Path != "" && endpoint.Path != "/" || endpoint.Opaque != "" {
-		return errors.New("apns2: host must be an absolute endpoint without credentials, path, query or fragment")
+		return errors.New("apns: host must be an absolute endpoint without credentials, path, query or fragment")
 	}
 	if endpoint.Scheme != "https" {
 		if endpoint.Scheme == "http" && allowHTTP {
@@ -169,7 +169,7 @@ func validateHost(host string, allowHTTP bool) error {
 const maxResponseBytes = 64 << 10
 
 func noRedirects(*http.Request, []*http.Request) error {
-	return errors.New("apns2: redirects are not supported")
+	return errors.New("apns: redirects are not supported")
 }
 
 // Push sends a Notification to the APNs gateway. Context carries cancellation
@@ -183,28 +183,28 @@ func noRedirects(*http.Request, []*http.Request) error {
 // app registers a new one.
 func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
 	if n == nil {
-		return nil, errors.New("apns2: notification is nil")
+		return nil, errors.New("apns: notification is nil")
 	}
 	if n.DeviceToken == "" {
-		return nil, errors.New("apns2: device token is empty")
+		return nil, errors.New("apns: device token is empty")
 	}
 	if _, err := hex.DecodeString(n.DeviceToken); err != nil {
-		return nil, fmt.Errorf("apns2: invalid device token: %w", err)
+		return nil, fmt.Errorf("apns: invalid device token: %w", err)
 	}
 	if n.PushType == "" {
-		return nil, errors.New("apns2: push type is empty")
+		return nil, errors.New("apns: push type is empty")
 	}
 	if n.Topic == "" && c.token != nil {
-		return nil, errors.New("apns2: topic is required with token authentication")
+		return nil, errors.New("apns: topic is required with token authentication")
 	}
 	if len(n.CollapseID) > maxCollapseIDBytes {
-		return nil, fmt.Errorf("apns2: collapse ID exceeds %d bytes", maxCollapseIDBytes)
+		return nil, fmt.Errorf("apns: collapse ID exceeds %d bytes", maxCollapseIDBytes)
 	}
 	if n.APNSID != "" && !canonicalUUID(n.APNSID) {
-		return nil, errors.New("apns2: apns-id must be a canonical 8-4-4-4-12 UUID")
+		return nil, errors.New("apns: apns-id must be a canonical 8-4-4-4-12 UUID")
 	}
 	if n.PushType == PushTypeBackground && n.Priority != 0 && n.Priority != PriorityLow {
-		return nil, errors.New("apns2: background notifications require priority 5")
+		return nil, errors.New("apns: background notifications require priority 5")
 	}
 	limit := 4096
 	if n.PushType == PushTypeVOIP {
@@ -341,7 +341,7 @@ func readResponseBodyLimit(body io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("apns2: response body exceeds %d bytes", limit)
+		return nil, fmt.Errorf("apns: response body exceeds %d bytes", limit)
 	}
 	return data, nil
 }
@@ -353,10 +353,10 @@ func marshalPayload(value any, limit int) ([]byte, error) {
 	}
 	object := bytes.TrimSpace(data)
 	if len(object) == 0 || object[0] != '{' {
-		return nil, errors.New("apns2: payload must be a JSON object")
+		return nil, errors.New("apns: payload must be a JSON object")
 	}
 	if len(data) > limit {
-		return nil, fmt.Errorf("apns2: payload exceeds %d bytes", limit)
+		return nil, fmt.Errorf("apns: payload exceeds %d bytes", limit)
 	}
 	return data, nil
 }

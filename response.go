@@ -1,4 +1,4 @@
-package apns2
+package apns
 
 import (
 	"net/http"
