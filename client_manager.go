@@ -94,8 +94,7 @@ func NewClientManager(config ManagerConfig) (*ClientManager, error) {
 	if config.MaxSize < 0 || config.MaxAge < 0 {
 		return nil, errors.New("apns2: cache limits must not be negative")
 	}
-	options := append([]ClientOption(nil), config.ClientOptions...)
-	clientConfig, err := clientConfigForOptions(options)
+	clientConfig, err := clientConfigForOptions(config.ClientOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -110,19 +109,22 @@ func NewClientManager(config ManagerConfig) (*ClientManager, error) {
 			return nil, err
 		}
 	}
-	options = append(options, WithHost(config.Host))
+	clientConfig.host = config.Host
+	if clientConfig.tlsConfig != nil {
+		clientConfig.tlsConfig = clientConfig.tlsConfig.Clone()
+	}
 	manager := &ClientManager{
 		host: config.Host, maxSize: config.MaxSize, maxAge: config.MaxAge,
 		factory: config.Factory, tokenFactory: config.TokenFactory,
 	}
 	if manager.factory == nil {
 		manager.factory = func(certificate tls.Certificate) (*Client, error) {
-			return NewClient(certificate, options...)
+			return newCertificateClient(certificate, clientConfig)
 		}
 	}
 	if manager.tokenFactory == nil {
 		manager.tokenFactory = func(t *token.Token, host string) (*Client, error) {
-			return NewTokenClient(t, options...)
+			return newTokenClient(t, clientConfig)
 		}
 	}
 	manager.initInternals()

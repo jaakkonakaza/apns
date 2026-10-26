@@ -337,3 +337,24 @@ func TestClientManagerNormalizesTrailingHostSlash(t *testing.T) {
 		})
 	}
 }
+
+func TestClientManagerCapturesTLSConfiguration(t *testing.T) {
+	provider := managerTestToken(t)
+	certificate := managerTestCertificate(1)
+	certificate.PrivateKey = managerSigningKey(t)
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13}
+	manager := managerForTest(t, ManagerConfig{ClientOptions: []ClientOption{WithTLSConfig(tlsConfig)}})
+	tlsConfig.MaxVersion = tls.VersionTLS11
+	for _, get := range []func() (*Client, error){
+		func() (*Client, error) { return manager.Get(certificate) },
+		func() (*Client, error) { return manager.GetByToken(provider) },
+	} {
+		client, err := get()
+		if err != nil {
+			t.Fatalf("captured TLS configuration: %v", err)
+		}
+		if got := client.ownedTransport.TLSClientConfig.MaxVersion; got != tls.VersionTLS13 {
+			t.Fatalf("maximum TLS version = %d, want %d", got, tls.VersionTLS13)
+		}
+	}
+}
