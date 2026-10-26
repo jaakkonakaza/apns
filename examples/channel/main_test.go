@@ -12,9 +12,9 @@ import (
 	"github.com/jaakkonakaza/apns"
 )
 
-type pushFunc func(context.Context, *apns.Notification) (*apns.Response, error)
+type pushFunc func(context.Context, apns.Request) (apns.Response, error)
 
-func (f pushFunc) Push(ctx context.Context, n *apns.Notification) (*apns.Response, error) {
+func (f pushFunc) Push(ctx context.Context, n apns.Request) (apns.Response, error) {
 	return f(ctx, n)
 }
 
@@ -25,7 +25,7 @@ func TestConcurrentSendingBoundsWorkAndPreservesOutcomes(t *testing.T) {
 	started := make(chan struct{}, 2)
 	var active, maximum atomic.Int32
 	transportError := errors.New("connection failed")
-	client := pushFunc(func(_ context.Context, n *apns.Notification) (*apns.Response, error) {
+	client := pushFunc(func(_ context.Context, n apns.Request) (apns.Response, error) {
 		current := active.Add(1)
 		defer active.Add(-1)
 		for old := maximum.Load(); current > old; old = maximum.Load() {
@@ -40,15 +40,15 @@ func TestConcurrentSendingBoundsWorkAndPreservesOutcomes(t *testing.T) {
 		<-gate
 		switch n.CollapseID {
 		case "2":
-			return &apns.Response{StatusCode: 403, Reason: apns.ReasonInvalidProviderToken}, nil
+			return apns.Response{StatusCode: 403}, &apns.Rejection{Response: apns.Response{StatusCode: 403}, Reason: apns.ReasonInvalidProviderToken}
 		case "3":
-			return nil, transportError
+			return apns.Response{}, transportError
 		default:
-			return &apns.Response{StatusCode: 200}, nil
+			return apns.Response{StatusCode: 200}, nil
 		}
 	})
-	results := sendNotifications(context.Background(), client, 8, 2, func(i int) *apns.Notification {
-		return &apns.Notification{CollapseID: strconv.Itoa(i)}
+	results := sendNotifications(context.Background(), client, 8, 2, func(i int) apns.Request {
+		return apns.Request{CollapseID: strconv.Itoa(i)}
 	})
 	for range 2 {
 		select {
@@ -66,15 +66,15 @@ func TestConcurrentSendingBoundsWorkAndPreservesOutcomes(t *testing.T) {
 		seen[result.Index] = true
 		switch result.Index {
 		case 2:
-			if result.Err != nil || result.Response == nil || result.Response.Success() {
+			if result.Err == nil || result.Response.StatusCode != 403 {
 				t.Errorf("APNs rejection lost: %+v", result)
 			}
 		case 3:
-			if !errors.Is(result.Err, transportError) || result.Response != nil {
+			if !errors.Is(result.Err, transportError) || result.Response.StatusCode != 0 {
 				t.Errorf("transport failure lost: %+v", result)
 			}
 		default:
-			if result.Err != nil || result.Response == nil || !result.Response.Success() {
+			if result.Err != nil || result.Response.StatusCode != 200 {
 				t.Errorf("unexpected result: %+v", result)
 			}
 		}
@@ -88,16 +88,16 @@ func TestCancelledSendingStopsWorkers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := make(chan struct{}, 1)
-	client := pushFunc(func(ctx context.Context, _ *apns.Notification) (*apns.Response, error) {
+	client := pushFunc(func(ctx context.Context, _ apns.Request) (apns.Response, error) {
 		select {
 		case started <- struct{}{}:
 		default:
 		}
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return apns.Response{}, ctx.Err()
 	})
-	results := sendNotifications(ctx, client, 100, 1, func(int) *apns.Notification {
-		return &apns.Notification{}
+	results := sendNotifications(ctx, client, 100, 1, func(int) apns.Request {
+		return apns.Request{}
 	})
 	<-started
 	cancel()

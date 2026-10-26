@@ -1,8 +1,17 @@
+// Apns sends push notifications to APNs from standard input.
+//
+// Each input line holds a device token and a JSON payload separated by a space:
+//
+//	apns --topic=com.example.app --auth-key-path=AuthKey.p8 --key-id=KEY_ID --team-id=TEAM_ID < pushes.txt
+//
+// It prints the response status for each notification, with the reason for
+// rejections. Run apns --help for all flags.
 package main
 
 import (
 	"bufio"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +20,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/jaakkonakaza/apns"
 	"github.com/jaakkonakaza/apns/certificate"
@@ -23,7 +33,7 @@ func main() {
 	}
 }
 
-func run(args []string, input io.Reader, output, diagnostics io.Writer, options ...apns.ClientOption) error {
+func run(args []string, input io.Reader, output, diagnostics io.Writer, configs ...apns.Config) error {
 	flags := flag.NewFlagSet("apns", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
 	var certificatePath, authKeyPath, keyID, teamID, topic, mode, pushType string
@@ -64,7 +74,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 	if certificatePath == "" && (authKeyPath == "" || keyID == "" || teamID == "") {
 		return fmt.Errorf("provide certificate-path or all of auth-key-path, key-id and team-id")
 	}
-	switch priority {
+	switch apns.Priority(priority) {
 	case 0, apns.PriorityPowerSaving, apns.PriorityLow, apns.PriorityHigh:
 	default:
 		return fmt.Errorf("priority must be 0, 1, 5 or 10")
@@ -72,31 +82,37 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 	if mode != "production" && mode != "development" {
 		return fmt.Errorf("mode must be production or development")
 	}
-	host := apns.HostProduction
-	if mode == "development" {
-		host = apns.HostDevelopment
+	cfg := apns.Config{Environment: apns.Production}
+	if len(configs) > 1 {
+		return fmt.Errorf("at most one client configuration is supported")
 	}
-	options = append([]apns.ClientOption{apns.WithHost(host)}, options...)
+	if len(configs) == 1 {
+		cfg = configs[0]
+		cfg.Environment = apns.Production
+	}
+	if mode == "development" {
+		cfg.Environment = apns.Sandbox
+	}
 	var client *apns.Client
 	if certificatePath != "" {
 		cert, err := certificate.FromPEMFile(certificatePath)
 		if err != nil {
-			return fmt.Errorf("load certificate %q: %w", certificatePath, err)
+			return fmt.Errorf("load certificate: %w", err)
 		}
-		client, err = apns.NewClient(cert, options...)
+		client, err = apns.NewCertificateClient(cert, cfg)
 		if err != nil {
 			return err
 		}
 	} else {
 		key, err := token.AuthKeyFromFile(authKeyPath)
 		if err != nil {
-			return fmt.Errorf("load signing key %q: %w", authKeyPath, err)
+			return fmt.Errorf("load signing key: %w", err)
 		}
 		provider, err := token.New(key, keyID, teamID)
 		if err != nil {
 			return err
 		}
-		client, err = apns.NewTokenClient(provider, options...)
+		client, err = apns.NewTokenClient(provider, cfg)
 		if err != nil {
 			return err
 		}
@@ -110,15 +126,18 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 		if !ok || deviceToken == "" || payload == "" {
 			return fmt.Errorf("expected <DeviceToken> <APNs Payload>")
 		}
-		res, err := client.Push(context.Background(), &apns.Notification{DeviceToken: deviceToken, Topic: topic, PushType: apns.PushType(pushType), Priority: priority, Payload: payload})
+		res, err := client.Push(context.Background(), apns.Request{DeviceToken: deviceToken, Topic: topic, PushType: apns.PushType(pushType), Priority: apns.Priority(priority), Payload: jsontext.Value(payload)})
+		line := fmt.Sprintf("%d", res.StatusCode)
 		if err != nil {
-			return err
+			rejection, ok := errors.AsType[*apns.Rejection](err)
+			if !ok {
+				return err
+			}
+			rejected++
+			line = rejectionLine(res.StatusCode, rejection)
 		}
 		sent++
-		if !res.Success() {
-			rejected++
-		}
-		if _, err := fmt.Fprintf(output, "%v: '%v'\n", res.StatusCode, res.Reason); err != nil {
+		if _, err := fmt.Fprintln(output, line); err != nil {
 			return err
 		}
 	}
@@ -129,6 +148,17 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer, options 
 		return fmt.Errorf("APNs rejected %d of %d notifications", rejected, sent)
 	}
 	return nil
+}
+
+// rejectionLine formats a rejection as "<status>: '<reason>'", matching the
+// pre-v1 CLI, and appends the device token invalidation time when APNs
+// reports one (410 Unregistered).
+func rejectionLine(status int, rejection *apns.Rejection) string {
+	line := fmt.Sprintf("%d: '%s'", status, rejection.Reason)
+	if !rejection.DeviceTokenInvalidatedAt.IsZero() {
+		line += " (invalidated at " + rejection.DeviceTokenInvalidatedAt.UTC().Format(time.RFC3339) + ")"
+	}
+	return line
 }
 
 func applicationVersion() string {

@@ -1,3 +1,4 @@
+// Package token creates and refreshes the provider tokens used for APNs token authentication.
 package token
 
 import (
@@ -10,10 +11,13 @@ import (
 	"encoding/json/v2"
 	"encoding/pem"
 	"errors"
-	"fmt"
+	"math/big"
 	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/jaakkonakaza/apns/internal/redact"
 )
 
 const (
@@ -27,7 +31,7 @@ const (
 	minRefresh = 20 * time.Minute
 )
 
-// Possible errors when parsing a .p8 file.
+// Errors returned for invalid signing credentials or snapshots.
 var (
 	ErrAuthKeyNotPEM   = errors.New("token: AuthKey must be a valid .p8 PEM file")
 	ErrAuthKeyNotECDSA = errors.New("token: AuthKey must be of type ecdsa.PrivateKey")
@@ -35,7 +39,12 @@ var (
 	ErrAuthKeyCurve    = errors.New("token: AuthKey must use the P-256 curve")
 	ErrKeyIDMissing    = errors.New("token: key ID is required")
 	ErrTeamIDMissing   = errors.New("token: team ID is required")
+	ErrInvalidSnapshot = errors.New("token: invalid snapshot")
 )
+
+func invalidSnapshot(cause error) error {
+	return redact.Error(ErrInvalidSnapshot.Error(), errors.Join(ErrInvalidSnapshot, cause))
+}
 
 // Identity identifies the signing credentials independently of a cached bearer.
 // PublicKey is the SEC 1 uncompressed encoding of the P-256 public key.
@@ -81,15 +90,15 @@ func New(authKey *ecdsa.PrivateKey, keyID, teamID string) (*Token, error) {
 	}
 	encoded, err := authKey.Bytes()
 	if err != nil {
-		return nil, fmt.Errorf("token: signing key: %w", err)
+		return nil, redact.Error("token: invalid signing key", err)
 	}
 	copied, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), encoded)
 	if err != nil {
-		return nil, fmt.Errorf("token: signing key: %w", err)
+		return nil, redact.Error("token: invalid signing key", err)
 	}
 	publicKey, err := copied.PublicKey.Bytes()
 	if err != nil {
-		return nil, fmt.Errorf("token: public key: %w", err)
+		return nil, redact.Error("token: invalid public key", err)
 	}
 	identity := Identity{TeamID: teamID, KeyID: keyID}
 	copy(identity.PublicKey[:], publicKey)
@@ -110,7 +119,7 @@ func (t *Token) Identity() (Identity, error) {
 func AuthKeyFromFile(filename string) (*ecdsa.PrivateKey, error) {
 	bytes, err := os.ReadFile(filename)
 	if err != nil {
-		return nil, err
+		return nil, redact.Error("token: cannot read signing key", err)
 	}
 	return AuthKeyFromBytes(bytes)
 }
@@ -124,7 +133,7 @@ func AuthKeyFromBytes(bytes []byte) (*ecdsa.PrivateKey, error) {
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, err
+		return nil, redact.Error("token: cannot parse signing key", err)
 	}
 	if pk, ok := key.(*ecdsa.PrivateKey); ok {
 		if pk.Curve != elliptic.P256() {
@@ -161,6 +170,9 @@ func (t *Token) Snapshot() (Snapshot, error) {
 // IssuedAt returns when the cached bearer was signed, or the zero time if
 // none has been signed or restored.
 func (t *Token) IssuedAt() time.Time {
+	if t == nil {
+		return time.Time{}
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.bearer == "" {
@@ -171,20 +183,96 @@ func (t *Token) IssuedAt() time.Time {
 
 // Restore caches a bearer signed earlier for the same signing identity, so a
 // short-lived process can reuse it instead of signing a new one.
-// APNs rejects provider token updates more often than every 20 minutes.
-// Bearer replaces the restored token once it expires. Restore does not verify
-// the bearer, and ignores an issue time in the future or older than
-// TokenTimeout.
-func (t *Token) Restore(bearer string, issuedAt time.Time) {
-	now := time.Now()
-	if issuedAt.After(now) || !now.Before(issuedAt.Add(TokenTimeout)) {
-		return
+// It verifies the signature, signing identity, and issue time before changing
+// the cache. Snapshots must have whole-second issue times matching the JWT iat,
+// must not be from the future, and must be younger than TokenTimeout.
+// A valid snapshot never replaces an equal or newer cached bearer. Restoring
+// the current bearer does not remove its locally signed refresh guard.
+// Snapshot contents and unwrapped diagnostic errors are sensitive.
+func (t *Token) Restore(snapshot Snapshot) error {
+	if t == nil || t.authKey == nil {
+		return ErrAuthKeyNil
+	}
+	issuedAt, err := t.verifySnapshot(snapshot)
+	if err != nil {
+		return err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.bearer = bearer
+	now := time.Now()
+	if issuedAt.After(now) || !now.Before(issuedAt.Add(TokenTimeout)) {
+		return invalidSnapshot(nil)
+	}
+	if t.bearer != "" && t.issuedAt >= issuedAt.Unix() {
+		return nil
+	}
+	t.bearer = snapshot.Bearer
 	t.issuedAt = issuedAt.Unix()
 	t.restored = true
+	return nil
+}
+
+func (t *Token) verifySnapshot(snapshot Snapshot) (time.Time, error) {
+	parts := strings.Split(snapshot.Bearer, ".")
+	if len(parts) != 3 {
+		return time.Time{}, invalidSnapshot(nil)
+	}
+	encoding := base64.RawURLEncoding.Strict()
+	for _, part := range parts {
+		for _, c := range part {
+			if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+				continue
+			}
+			return time.Time{}, invalidSnapshot(nil)
+		}
+	}
+	headerBytes, err := encoding.DecodeString(parts[0])
+	if err != nil {
+		return time.Time{}, invalidSnapshot(err)
+	}
+	var header struct {
+		Algorithm string `json:"alg"`
+		KeyID     string `json:"kid"`
+		Type      string `json:"typ,omitzero"`
+	}
+	if err := json.Unmarshal(headerBytes, &header, json.RejectUnknownMembers(true)); err != nil {
+		return time.Time{}, invalidSnapshot(err)
+	}
+	if header.Algorithm != "ES256" || header.KeyID != t.identity.KeyID {
+		return time.Time{}, invalidSnapshot(nil)
+	}
+	claimsBytes, err := encoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, invalidSnapshot(err)
+	}
+	var claims struct {
+		Issuer   string `json:"iss"`
+		IssuedAt *int64 `json:"iat"`
+	}
+	if err := json.Unmarshal(claimsBytes, &claims, json.RejectUnknownMembers(true)); err != nil {
+		return time.Time{}, invalidSnapshot(err)
+	}
+	if claims.Issuer != t.identity.TeamID || claims.IssuedAt == nil {
+		return time.Time{}, invalidSnapshot(nil)
+	}
+	issuedAt := time.Unix(*claims.IssuedAt, 0)
+	if !snapshot.IssuedAt.Equal(issuedAt) {
+		return time.Time{}, invalidSnapshot(nil)
+	}
+	signature, err := encoding.DecodeString(parts[2])
+	if err != nil {
+		return time.Time{}, invalidSnapshot(err)
+	}
+	if len(signature) != 64 {
+		return time.Time{}, invalidSnapshot(nil)
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	r := new(big.Int).SetBytes(signature[:32])
+	s := new(big.Int).SetBytes(signature[32:])
+	if !ecdsa.Verify(&t.authKey.PublicKey, digest[:], r, s) {
+		return time.Time{}, invalidSnapshot(nil)
+	}
+	return issuedAt, nil
 }
 
 // Invalidate drops bearer from the cache after APNs rejects it, so the next
@@ -193,6 +281,9 @@ func (t *Token) Restore(bearer string, issuedAt time.Time) {
 // signing again with the same key wouldn't help, and APNs rejects tokens
 // updated more often than every 20 minutes.
 func (t *Token) Invalidate(bearer string) {
+	if t == nil {
+		return
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if bearer == "" || bearer != t.bearer {
@@ -223,21 +314,21 @@ func (t *Token) generateLocked() error {
 		KeyID     string `json:"kid"`
 	}{"ES256", t.identity.KeyID})
 	if err != nil {
-		return err
+		return redact.Error("token: cannot encode signing identity", err)
 	}
 	claims, err := json.Marshal(struct {
 		Issuer   string `json:"iss"`
 		IssuedAt int64  `json:"iat"`
 	}{t.identity.TeamID, issuedAt})
 	if err != nil {
-		return err
+		return redact.Error("token: cannot encode signing identity", err)
 	}
 	encoding := base64.RawURLEncoding
 	signingString := encoding.EncodeToString(header) + "." + encoding.EncodeToString(claims)
 	digest := sha256.Sum256([]byte(signingString))
 	r, s, err := ecdsa.Sign(rand.Reader, t.authKey, digest[:])
 	if err != nil {
-		return err
+		return redact.Error("token: cannot sign provider token", err)
 	}
 	// ES256 uses two fixed-width, 32-byte integers, rather than ASN.1 DER.
 	signature := make([]byte, 64)

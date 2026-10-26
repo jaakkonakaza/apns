@@ -33,6 +33,9 @@ jobs:
       - name: Check module tidiness
         run: make tidy-check
 
+      - name: Check Go modernization
+        run: make modernize-check
+
       - name: Lint
         run: make lint
 

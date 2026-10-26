@@ -1,85 +1,64 @@
-// Package apns is a Go client for sending Apple Push Notification service
-// (APNs) notifications over HTTP/2.
+// Package apns is a client for Apple Push Notification service (APNs).
 package apns
 
 import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
+	"uuid"
 
+	"github.com/jaakkonakaza/apns/internal/credential"
+	"github.com/jaakkonakaza/apns/internal/nilcheck"
 	"github.com/jaakkonakaza/apns/token"
 )
 
-// Apple HTTP/2 Development & Production urls. APNs also accepts port 2197,
-// for example WithHost(HostProduction + ":2197").
+// Environment selects the complete built-in APNs endpoint set.
+type Environment uint8
+
 const (
-	HostDevelopment = "https://api.sandbox.push.apple.com"
-	HostProduction  = "https://api.push.apple.com"
+	Sandbox Environment = iota + 1
+	Production
 )
 
-// Client sends notifications using a fixed endpoint and authentication identity.
-// Reuse it across pushes so its HTTP/2 connections stay open.
+const (
+	HostDevelopment    = "https://api.sandbox.push.apple.com"
+	HostProduction     = "https://api.push.apple.com"
+	maxResponseBytes   = 64 << 10
+	maxCollapseIDBytes = 64
+)
+
+// Client binds an immutable authentication identity and environment. Reuse it
+// across concurrent requests. External certificate signers must remain immutable
+// and safe for concurrent use. Callbacks must preserve request contexts.
 type Client struct {
+	environment    Environment
 	host           string
-	certificate    tls.Certificate
 	token          *token.Token
 	httpClient     *http.Client
 	ownedTransport *http.Transport
+	proxied        bool
 }
 
-// Host returns the endpoint selected when the client was constructed.
-func (c *Client) Host() string { return c.host }
-
-// NewClient constructs a certificate-authenticated client without connecting.
-// WithHTTPClient uses the supplied client's TLS identity instead of certificate.
-func NewClient(certificate tls.Certificate, options ...ClientOption) (*Client, error) {
-	config, err := clientConfigForOptions(options)
-	if err != nil {
-		return nil, err
-	}
-	return newCertificateClient(certificate, config)
-}
-
-func newCertificateClient(certificate tls.Certificate, config clientConfig) (*Client, error) {
-	if config.httpClient == nil && (len(certificate.Certificate) == 0 || certificate.PrivateKey == nil) {
-		return nil, errors.New("apns: certificate and private key are required")
-	}
-	client, err := newClient(&tls.Config{Certificates: []tls.Certificate{certificate}}, config)
-	if err != nil {
-		return nil, err
-	}
-	client.certificate = certificate
-	return client, nil
-}
-
-// NewTokenClient constructs a token-authenticated client without connecting.
-// Share one provider token per signing identity and reuse the returned client.
-func NewTokenClient(provider *token.Token, options ...ClientOption) (*Client, error) {
-	config, err := clientConfigForOptions(options)
-	if err != nil {
-		return nil, err
-	}
-	return newTokenClient(provider, config)
-}
-
-func newTokenClient(provider *token.Token, config clientConfig) (*Client, error) {
+// NewTokenClient validates configuration without contacting APNs.
+func NewTokenClient(provider *token.Token, cfg Config) (*Client, error) {
 	if provider == nil {
-		return nil, token.ErrAuthKeyNil
+		return nil, safeError("construction", token.ErrAuthKeyNil)
 	}
 	if _, err := provider.Identity(); err != nil {
-		return nil, err
+		return nil, safeError("construction", err)
 	}
-	client, err := newClient(&tls.Config{}, config)
+	client, err := newClient(&tls.Config{}, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -87,252 +66,317 @@ func newTokenClient(provider *token.Token, config clientConfig) (*Client, error)
 	return client, nil
 }
 
-func clientConfigForOptions(options []ClientOption) (clientConfig, error) {
-	config := defaultClientConfig()
-	for _, option := range options {
-		if option == nil {
-			return clientConfig{}, errors.New("apns: client option is nil")
-		}
-		option(&config)
-	}
-	return config, nil
-}
-
-func validateClientConfig(config clientConfig) error {
-	if err := validateHost(config.host, config.httpClient != nil); err != nil {
-		return err
-	}
-	if config.httpClient == nil && (config.timeout < 0 || config.dialTimeout < 0 || config.readIdleTimeout < 0 || config.idleConnTimeout < 0) {
-		return errors.New("apns: timeouts must not be negative")
-	}
-	if config.httpClient != nil && config.transportWrapper != nil {
-		return errors.New("apns: WithTransportWrapper cannot be combined with WithHTTPClient")
-	}
-	if config.httpClient == nil && config.tlsConfig != nil {
-		cfg := config.tlsConfig
-		if cfg.MaxVersion != 0 && (cfg.MaxVersion < tls.VersionTLS12 || cfg.MinVersion > cfg.MaxVersion) {
-			return errors.New("apns: incompatible TLS version limits")
-		}
-	}
-	return nil
-}
-
-func newClient(tlsConfig *tls.Config, config clientConfig) (*Client, error) {
-	if err := validateClientConfig(config); err != nil {
-		return nil, err
-	}
-	if config.tlsConfig != nil {
-		supplied := config.tlsConfig.Clone()
-		if len(tlsConfig.Certificates) != 0 {
-			supplied.Certificates = tlsConfig.Certificates
-			supplied.GetClientCertificate = nil
-		}
-		tlsConfig = supplied
-	}
-	client := &Client{host: strings.TrimRight(config.host, "/"), httpClient: config.httpClient}
-	if client.httpClient == nil {
-		transport := newTransport(tlsConfig, config)
-		var roundTripper http.RoundTripper = transport
-		if config.transportWrapper != nil {
-			roundTripper = config.transportWrapper(transport)
-			if roundTripper == nil {
-				return nil, errors.New("apns: transport wrapper returned nil")
-			}
-		}
-		client.ownedTransport = transport
-		client.httpClient = &http.Client{Transport: roundTripper, Timeout: config.timeout, CheckRedirect: noRedirects}
-	}
-	return client, nil
-}
-
-func validateHost(host string, allowHTTP bool) error {
-	if host == "" {
-		return errors.New("apns: host is required")
-	}
-	endpoint, err := url.Parse(host)
+// NewCertificateClient copies mutable certificate data and validates key matching.
+// External private signers are retained and must not be mutated by the caller.
+func NewCertificateClient(cert tls.Certificate, cfg Config) (*Client, error) {
+	copied, err := copyCertificate(cert)
 	if err != nil {
-		return fmt.Errorf("apns: invalid host: %w", err)
+		return nil, safeError("construction", err)
 	}
-	if endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || strings.Contains(host, "#") || endpoint.Fragment != "" || endpoint.Path != "" && endpoint.Path != "/" || endpoint.Opaque != "" {
-		return errors.New("apns: host must be an absolute endpoint without credentials, path, query or fragment")
+	return newClient(&tls.Config{Certificates: []tls.Certificate{copied}}, cfg)
+}
+
+func copyCertificate(cert tls.Certificate) (tls.Certificate, error) {
+	pub, err := credential.PublicKey(cert)
+	if err != nil {
+		return tls.Certificate{}, err
 	}
-	if endpoint.Scheme != "https" {
-		if endpoint.Scheme == "http" && allowHTTP {
-			return nil
+	copied := cert
+	copied.Certificate = make([][]byte, len(cert.Certificate))
+	for i, der := range cert.Certificate {
+		copied.Certificate[i] = bytes.Clone(der)
+	}
+	leaf, err := x509.ParseCertificate(copied.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	if !bytes.Equal(pub, leaf.RawSubjectPublicKeyInfo) {
+		return tls.Certificate{}, errors.New("certificate does not match signing key")
+	}
+	copied.Leaf = leaf
+	copied.OCSPStaple = bytes.Clone(cert.OCSPStaple)
+	copied.SignedCertificateTimestamps = make([][]byte, len(cert.SignedCertificateTimestamps))
+	for i, v := range cert.SignedCertificateTimestamps {
+		copied.SignedCertificateTimestamps[i] = bytes.Clone(v)
+	}
+	copied.SupportedSignatureAlgorithms = append([]tls.SignatureScheme(nil), cert.SupportedSignatureAlgorithms...)
+	return copied, nil
+}
+
+func newClient(originTLS *tls.Config, cfg Config) (*Client, error) {
+	transport, err := makeTransport(originTLS, cfg)
+	if err != nil {
+		return nil, safeError("construction", err)
+	}
+	var rt http.RoundTripper = transport
+	if cfg.Transport.Decorate != nil {
+		rt = cfg.Transport.Decorate(rt)
+		if nilcheck.IsNil(rt) {
+			transport.CloseIdleConnections()
+			return nil, safeError("construction", errors.New("nil transport decoration"))
 		}
-		return ErrHTTP2Required
 	}
-	return nil
+	host := HostDevelopment
+	if cfg.Environment == Production {
+		host = HostProduction
+	}
+	if cfg.DevicePort == 2197 {
+		host += ":2197"
+	}
+	return &Client{environment: cfg.Environment, host: host, ownedTransport: transport, proxied: cfg.Transport.Proxy != nil, httpClient: &http.Client{
+		Transport: captureRoundTripper{next: rt}, Timeout: requestTimeout(cfg), CheckRedirect: noRedirects,
+	}}, nil
 }
 
-// maxResponseBytes bounds how much of an APNs response body Push reads.
-const maxResponseBytes = 64 << 10
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
-func noRedirects(*http.Request, []*http.Request) error {
-	return errors.New("apns: redirects are not supported")
-}
-
-// Push sends a Notification to the APNs gateway. Context carries cancellation
-// and deadlines and must not be nil. Push reconnects as needed and returns the
-// APNs response or an error if the request could not be completed.
-//
-// If APNs closes a connection, its reason may appear in the transport error text.
-//
-// Push does not retry. Correct rejected requests before retrying, back off on
-// ReasonTooManyRequests, and stop sending to a token that returns 410 until the
-// app registers a new one.
-func (c *Client) Push(ctx context.Context, n *Notification) (*Response, error) {
-	if n == nil {
-		return nil, errors.New("apns: notification is nil")
+// Push encodes the payload once and returns nil error only for APNs acceptance.
+// It adds no application retry loop. HTTP/2 may replay safely unprocessed work.
+func (c *Client) Push(ctx context.Context, req Request) (Response, error) {
+	if c == nil || c.httpClient == nil {
+		return Response{}, safeError("validation", errors.New("client is uninitialized"))
 	}
-	if n.DeviceToken == "" {
-		return nil, errors.New("apns: device token is empty")
+	if err := validateRequest(req); err != nil {
+		return Response{}, safeError("validation", err)
 	}
-	if _, err := hex.DecodeString(n.DeviceToken); err != nil {
-		return nil, fmt.Errorf("apns: invalid device token: %w", err)
+	headers := make(http.Header)
+	headers.Set("apns-topic", req.Topic)
+	headers.Set("apns-push-type", string(req.PushType))
+	if req.CollapseID != "" {
+		headers.Set("apns-collapse-id", req.CollapseID)
 	}
-	if n.PushType == "" {
-		return nil, errors.New("apns: push type is empty")
+	setRequestID(headers, "apns-id", req.ID)
+	if err := setPriority(headers, req.Priority, req.PushType, false); err != nil {
+		return Response{}, safeError("validation", err)
 	}
-	if n.Topic == "" && c.token != nil {
-		return nil, errors.New("apns: topic is required with token authentication")
-	}
-	if len(n.CollapseID) > maxCollapseIDBytes {
-		return nil, fmt.Errorf("apns: collapse ID exceeds %d bytes", maxCollapseIDBytes)
-	}
-	if n.APNSID != "" && !canonicalUUID(n.APNSID) {
-		return nil, errors.New("apns: apns-id must be a canonical 8-4-4-4-12 UUID")
-	}
-	if n.PushType == PushTypeBackground && n.Priority != 0 && n.Priority != PriorityLow {
-		return nil, errors.New("apns: background notifications require priority 5")
+	if err := setExpiration(headers, req.ExpiresAt, false); err != nil {
+		return Response{}, safeError("validation", err)
 	}
 	limit := 4096
-	if n.PushType == PushTypeVOIP {
+	if req.PushType == PushTypeVOIP {
 		limit = 5120
 	}
-	payload, err := marshalPayload(n.Payload, limit)
+	body, err := marshalPayload(req.Payload, limit)
 	if err != nil {
-		return nil, err
+		return Response{}, err
 	}
+	return c.execute(ctx, http.MethodPost, c.host+"/3/device/"+req.DeviceToken, headers, body, http.StatusOK, maxResponseBytes, nil)
+}
 
-	requestURL := c.host + "/3/device/" + n.DeviceToken
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+func validateRequest(req Request) error {
+	if req.DeviceToken == "" {
+		return errors.New("device token required")
 	}
-
-	request = prepareRequest(request)
-
-	var bearer string
-	if c.token != nil {
-		if bearer, err = c.token.Bearer(); err != nil {
-			return nil, err
+	if _, err := hex.DecodeString(req.DeviceToken); err != nil {
+		return err
+	}
+	if req.Topic == "" || req.PushType == "" {
+		return errors.New("topic and push type required")
+	}
+	if len(req.CollapseID) > maxCollapseIDBytes {
+		return errors.New("collapse identifier too long")
+	}
+	for _, v := range []string{req.Topic, string(req.PushType), req.CollapseID} {
+		if !validHeader(v) {
+			return errors.New("invalid metadata header")
 		}
-		request.Header.Set("authorization", "bearer "+bearer)
 	}
-
-	setHeaders(request, n)
-
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		// Closing a response body after reading it cannot change the push result.
-		_ = response.Body.Close()
-	}()
-
-	r := &Response{}
-	r.StatusCode = response.StatusCode
-	r.Header = response.Header.Clone()
-	r.APNSID = response.Header.Get("apns-id")
-	r.APNSUniqueID = response.Header.Get("apns-unique-id")
-
-	data, err := readResponseBody(response.Body)
-	if err != nil {
-		return r, err
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return r, nil
-	}
-	var body struct {
-		Reason    string `json:"reason"`
-		Timestamp *int64 `json:"timestamp"`
-	}
-	if err := json.Unmarshal(data, &body); err != nil {
-		return r, err
-	}
-	r.Reason = body.Reason
-	if body.Timestamp != nil {
-		r.Timestamp = time.UnixMilli(*body.Timestamp)
-	}
-	if c.token != nil && (r.Reason == ReasonExpiredProviderToken || r.Reason == ReasonInvalidProviderToken) {
-		c.token.Invalidate(bearer)
-	}
-	return r, nil
+	return nil
 }
 
-// CloseIdleConnections closes any underlying connections which were previously
-// connected from previous requests but are now sitting idle. It will not
-// interrupt any connections currently in use.
-func (c *Client) CloseIdleConnections() {
-	if c.ownedTransport != nil {
-		c.ownedTransport.CloseIdleConnections()
-		return
-	}
-	c.httpClient.CloseIdleConnections()
-}
-
-func setHeaders(r *http.Request, n *Notification) {
-	r.Header.Set("apns-push-type", string(n.PushType))
-	if n.Topic != "" {
-		r.Header.Set("apns-topic", n.Topic)
-	}
-	if n.APNSID != "" {
-		r.Header.Set("apns-id", n.APNSID)
-	}
-	if n.CollapseID != "" {
-		r.Header.Set("apns-collapse-id", n.CollapseID)
-	}
-	priority := n.Priority
-	if n.PushType == PushTypeBackground && priority == 0 {
-		priority = PriorityLow
-	}
-	if priority > 0 {
-		r.Header.Set("apns-priority", strconv.Itoa(priority))
-	}
-	if !n.Expiration.IsZero() {
-		r.Header.Set("apns-expiration", strconv.FormatInt(max(0, n.Expiration.Unix()), 10))
-	}
-}
-
-// maxCollapseIDBytes is Apple's limit for apns-collapse-id.
-const maxCollapseIDBytes = 64
-
-// canonicalUUID reports whether s is 32 hexadecimal digits in the 8-4-4-4-12
-// form APNs uses for apns-id and apns-request-id. Apple documents lowercase,
-// but APNs returns uppercase IDs, so either case is accepted.
-func canonicalUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i, c := range s {
-		switch i {
-		case 8, 13, 18, 23:
-			if c != '-' {
-				return false
-			}
-		default:
-			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-				return false
-			}
+func validHeader(s string) bool {
+	for _, b := range []byte(s) {
+		if b == '\r' || b == '\n' || b == 127 || b < 32 && b != '\t' {
+			return false
 		}
 	}
 	return true
 }
 
-func readResponseBody(body io.Reader) ([]byte, error) {
-	return readResponseBodyLimit(body, maxResponseBytes)
+func setRequestID(h http.Header, name string, id *uuid.UUID) {
+	if id != nil {
+		h.Set(name, id.String())
+	}
+}
+
+func setPriority(h http.Header, p Priority, typ PushType, broadcast bool) error {
+	if p != 0 && p != 1 && p != 5 && p != 10 {
+		return errors.New("unsupported priority")
+	}
+	if typ == PushTypeBackground {
+		if p == 0 {
+			p = PriorityLow
+		}
+		if p != PriorityLow {
+			return errors.New("background priority must be 5")
+		}
+	}
+	if (typ == PushTypeLiveActivity || broadcast) && p != 0 && p != PriorityLow && p != PriorityHigh {
+		return errors.New("activity priority must be 5 or 10")
+	}
+	if broadcast && p == 0 {
+		p = PriorityHigh
+	}
+	if p != 0 {
+		h.Set("apns-priority", strconv.Itoa(int(p)))
+	}
+	return nil
+}
+
+func setExpiration(h http.Header, expires *time.Time, broadcast bool) error {
+	if expires == nil {
+		if broadcast {
+			h.Set("apns-expiration", "0")
+		}
+		return nil
+	}
+	if expires.Before(time.Unix(0, 0)) {
+		return errors.New("expiration precedes Unix epoch")
+	}
+	h.Set("apns-expiration", strconv.FormatInt(expires.Unix(), 10))
+	return nil
+}
+
+// responseCapture is scoped to one operation, including transport recovery.
+// It keeps the last response and copies its metadata only if Do fails.
+type responseCapture struct {
+	mu       sync.Mutex
+	response *http.Response
+}
+type (
+	responseCaptureKey  struct{}
+	captureRoundTripper struct{ next http.RoundTripper }
+)
+
+func (rt captureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	response, err := rt.next.RoundTrip(req)
+	if response != nil {
+		if capture, ok := req.Context().Value(responseCaptureKey{}).(*responseCapture); ok {
+			capture.mu.Lock()
+			capture.response = response
+			capture.mu.Unlock()
+		}
+	}
+	return response, err
+}
+
+func (capture *responseCapture) snapshot() Response {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.response == nil {
+		return Response{}
+	}
+	return responseMetadata(capture.response)
+}
+
+func responseMetadata(response *http.Response) Response {
+	h := response.Header.Clone()
+	return Response{StatusCode: response.StatusCode, Header: h, APNSID: h.Get("apns-id"), APNSUniqueID: h.Get("apns-unique-id"), RequestID: h.Get("apns-request-id")}
+}
+
+func (c *Client) execute(ctx context.Context, method, url string, headers http.Header, body []byte, expectedStatus int, bodyLimit int64, decodeSuccess func([]byte) error) (Response, error) {
+	if c == nil || c.httpClient == nil {
+		return Response{}, safeError("validation", errors.New("client is uninitialized"))
+	}
+	if ctx == nil {
+		return Response{}, safeError("validation", errors.New("context is nil"))
+	}
+	capture := new(responseCapture)
+	ctx = context.WithValue(ctx, responseCaptureKey{}, capture)
+	request, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	if err != nil {
+		return Response{}, safeError("request", err)
+	}
+	request.Header = headers.Clone()
+	request.Header.Set("content-type", "application/json")
+	request = prepareRequest(request, c.proxied)
+	var bearer string
+	if c.token != nil {
+		bearer, err = c.token.Bearer()
+		if err != nil {
+			return Response{}, safeError("authentication", err)
+		}
+		request.Header.Set("authorization", "bearer "+bearer)
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		metadata := capture.snapshot()
+		if metadata.StatusCode != 0 {
+			return metadata, responseFailure(metadata, err)
+		}
+		return Response{}, safeError("transport", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	metadata := responseMetadata(response)
+	// APNs has accepted the work once the expected status arrives. Bodies it
+	// does not need cannot turn acceptance into a failure that invites a retry.
+	if response.StatusCode == expectedStatus && decodeSuccess == nil {
+		return metadata, nil
+	}
+	data, readErr := readResponseBodyLimit(response.Body, bodyLimit)
+	if readErr != nil {
+		return metadata, responseFailure(metadata, readErr)
+	}
+	if response.StatusCode >= 400 && response.StatusCode <= 599 {
+		rejection := &Rejection{Response: metadata}
+		rejection.cause = decodeRejection(data, response.StatusCode, rejection)
+		if rejection.cause == nil && response.StatusCode == http.StatusForbidden && c.token != nil &&
+			(rejection.Reason == ReasonInvalidProviderToken || rejection.Reason == ReasonExpiredProviderToken) {
+			c.token.Invalidate(bearer)
+		}
+		return metadata, rejection
+	}
+	if response.StatusCode != expectedStatus {
+		return metadata, &ResponseError{Response: metadata, cause: errors.New("unexpected HTTP status")}
+	}
+	if decodeSuccess != nil {
+		if err := decodeSuccess(data); err != nil {
+			return metadata, &ResponseError{Response: metadata, cause: err}
+		}
+	}
+	return metadata, nil
+}
+
+func responseFailure(metadata Response, cause error) error {
+	if metadata.StatusCode >= 400 && metadata.StatusCode <= 599 {
+		return &Rejection{Response: metadata, cause: cause}
+	}
+	return &ResponseError{Response: metadata, cause: cause}
+}
+
+func decodeRejection(data []byte, status int, rejection *Rejection) error {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
+	var fields map[string]jsontext.Value
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return errors.New("rejection body must be an object")
+	}
+	var failures []error
+	if reason, ok := fields["reason"]; ok {
+		var text string
+		if bytes.Equal(bytes.TrimSpace(reason), []byte("null")) {
+			failures = append(failures, errors.New("null rejection reason"))
+		} else if err := json.Unmarshal(reason, &text); err != nil {
+			failures = append(failures, err)
+		} else {
+			rejection.Reason = Reason(text)
+		}
+	}
+	if status == http.StatusGone {
+		if raw, ok := fields["timestamp"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			var milliseconds int64
+			if err := json.Unmarshal(raw, &milliseconds); err != nil {
+				failures = append(failures, err)
+			} else {
+				rejection.DeviceTokenInvalidatedAt = time.UnixMilli(milliseconds)
+			}
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func readResponseBodyLimit(body io.Reader, limit int64) ([]byte, error) {
@@ -341,22 +385,30 @@ func readResponseBodyLimit(body io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("apns: response body exceeds %d bytes", limit)
+		return nil, errors.New("response body too large")
 	}
 	return data, nil
 }
 
 func marshalPayload(value any, limit int) ([]byte, error) {
-	data, err := json.Marshal(&Notification{Payload: value})
+	data, err := json.Marshal(value)
 	if err != nil {
-		return nil, err
+		return nil, safeError("encoding", err)
 	}
-	object := bytes.TrimSpace(data)
-	if len(object) == 0 || object[0] != '{' {
-		return nil, errors.New("apns: payload must be a JSON object")
+	// Marshal already rejects invalid, duplicate-name, and non-UTF-8 output,
+	// including from MarshalJSON, and emits it without surrounding whitespace.
+	if len(data) == 0 || data[0] != '{' {
+		return nil, safeError("validation", errors.New("payload must be a strict JSON object"))
 	}
 	if len(data) > limit {
-		return nil, fmt.Errorf("apns: payload exceeds %d bytes", limit)
+		return nil, safeError("validation", fmt.Errorf("payload exceeds %d bytes", limit))
 	}
 	return data, nil
+}
+
+// CloseIdleConnections releases idle sockets while preserving active and future sends.
+func (c *Client) CloseIdleConnections() {
+	if c != nil && c.ownedTransport != nil {
+		c.ownedTransport.CloseIdleConnections()
+	}
 }

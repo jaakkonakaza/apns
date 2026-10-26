@@ -5,7 +5,7 @@ GOLANGCI_LINT := $(TOOLS_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-li
 GOVULNCHECK := $(TOOLS_DIR)/govulncheck-$(GOVULNCHECK_VERSION)/govulncheck
 COVER_PACKAGES = $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./... | paste -sd, -)
 
-.PHONY: tools update-tools fmt fmt-check tidy-check lint build test coverage vuln check
+.PHONY: tools update-tools fmt fmt-check tidy-check modernize-check lint build test coverage vuln check
 
 tools: $(GOLANGCI_LINT) $(GOVULNCHECK)
 
@@ -27,6 +27,9 @@ fmt-check: $(GOLANGCI_LINT)
 tidy-check:
 	go mod tidy -diff
 
+modernize-check:
+	go fix -diff ./...
+
 lint: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./...
 
@@ -42,4 +45,4 @@ coverage:
 vuln: $(GOVULNCHECK)
 	$(GOVULNCHECK) ./...
 
-check: fmt-check tidy-check lint build test vuln
+check: fmt-check tidy-check modernize-check lint build test vuln

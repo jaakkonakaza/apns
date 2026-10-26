@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jaakkonakaza/apns/internal/redact"
 	"software.sslmate.com/src/go-pkcs12"
 )
 
@@ -43,7 +44,7 @@ var (
 func FromP12File(filename string, password string) (tls.Certificate, error) {
 	p12bytes, err := os.ReadFile(filename)
 	if err != nil {
-		return tls.Certificate{}, err
+		return tls.Certificate{}, redact.Error("certificate: cannot read certificate file", err)
 	}
 	return FromP12Bytes(p12bytes, password)
 }
@@ -56,7 +57,7 @@ func FromP12File(filename string, password string) (tls.Certificate, error) {
 func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
 	key, cert, chain, err := pkcs12.DecodeChain(data, password)
 	if err != nil {
-		return tls.Certificate{}, err
+		return tls.Certificate{}, redact.Error("certificate: cannot decode PKCS#12 certificate", err)
 	}
 	if err := matchPrivateKey(cert, key); err != nil {
 		return tls.Certificate{}, err
@@ -81,7 +82,7 @@ func FromP12Bytes(data []byte, password string) (tls.Certificate, error) {
 func FromPEMFile(filename string) (tls.Certificate, error) {
 	bytes, err := os.ReadFile(filename)
 	if err != nil {
-		return tls.Certificate{}, err
+		return tls.Certificate{}, redact.Error("certificate: cannot read certificate file", err)
 	}
 	return FromPEMBytes(bytes)
 }
@@ -114,7 +115,7 @@ func FromPEMBytes(data []byte) (tls.Certificate, error) {
 	}
 	cert, err := x509.ParseCertificate(certificates[0])
 	if err != nil {
-		return tls.Certificate{}, ErrFailedToParseCertificate
+		return tls.Certificate{}, redact.Error(ErrFailedToParseCertificate.Error(), errors.Join(ErrFailedToParseCertificate, err))
 	}
 	if err := checkValidity(cert); err != nil {
 		return tls.Certificate{}, err
@@ -136,11 +137,11 @@ func matchPrivateKey(cert *x509.Certificate, key crypto.PrivateKey) error {
 	}
 	publicKey, err := x509.MarshalPKIXPublicKey(signer.Public())
 	if err != nil {
-		return err
+		return redact.Error("certificate: cannot encode signing public key", err)
 	}
 	certificateKey, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
 	if err != nil {
-		return err
+		return redact.Error("certificate: cannot encode certificate public key", err)
 	}
 	if !bytes.Equal(publicKey, certificateKey) {
 		return ErrKeyMismatch
@@ -162,18 +163,17 @@ func checkValidity(cert *x509.Certificate) error {
 }
 
 func parsePrivateKey(bytes []byte) (crypto.PrivateKey, error) {
-	var key crypto.PrivateKey
-	key, err := x509.ParsePKCS1PrivateKey(bytes)
-	if err == nil {
+	key, pkcs1Err := x509.ParsePKCS1PrivateKey(bytes)
+	if pkcs1Err == nil {
 		return key, nil
 	}
-	key, err = x509.ParsePKCS8PrivateKey(bytes)
-	if err == nil {
-		return key, nil
+	pkcs8Key, pkcs8Err := x509.ParsePKCS8PrivateKey(bytes)
+	if pkcs8Err == nil {
+		return pkcs8Key, nil
 	}
-	key, err = x509.ParseECPrivateKey(bytes)
-	if err == nil {
-		return key, nil
+	ecKey, ecErr := x509.ParseECPrivateKey(bytes)
+	if ecErr == nil {
+		return ecKey, nil
 	}
-	return nil, ErrFailedToParsePrivateKey
+	return nil, redact.Error(ErrFailedToParsePrivateKey.Error(), errors.Join(ErrFailedToParsePrivateKey, pkcs1Err, pkcs8Err, ecErr))
 }

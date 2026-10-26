@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/payload"
 	"github.com/jaakkonakaza/apns/token"
 )
 
@@ -39,18 +40,9 @@ func run() error {
 		return err
 	}
 
-	notification := &apns.Notification{}
-	notification.DeviceToken = *deviceToken
-	notification.Topic = *topic
-	notification.PushType = apns.PushTypeAlert
-	notification.Payload = []byte(`{
-			"aps" : {
-				"alert" : "Hello!"
-			}
-		}
-	`)
+	notification := apns.Request{DeviceToken: *deviceToken, Topic: *topic, PushType: apns.PushTypeAlert, Payload: payload.Notification{APS: payload.APS{Alert: &payload.Alert{Body: "Hello!"}}}}
 
-	client, err := apns.NewTokenClient(provider, apns.WithHost(apns.HostProduction))
+	client, err := apns.NewTokenClient(provider, apns.Config{Environment: apns.Production})
 	if err != nil {
 		return err
 	}
@@ -60,11 +52,8 @@ func run() error {
 		return fmt.Errorf("push notification: %w", err)
 	}
 
-	if _, err := fmt.Printf("%v %v %v\n", res.StatusCode, res.APNSID, res.Reason); err != nil {
+	if _, err := fmt.Printf("%v %v\n", res.StatusCode, res.APNSID); err != nil {
 		return err
-	}
-	if !res.Success() {
-		return fmt.Errorf("APNs rejected notification: %s", res.Reason)
 	}
 	return nil
 }

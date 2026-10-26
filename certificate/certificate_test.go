@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jaakkonakaza/apns/certificate"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 // PKCS#12
@@ -45,8 +46,8 @@ func TestEncryptedValidCertificateFromP12File(t *testing.T) {
 
 func TestNoSuchFileP12File(t *testing.T) {
 	cer, err := certificate.FromP12File("", "")
-	if got, want := err.Error(), errors.New("open : no such file or directory").Error(); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
+	if !errors.Is(err, os.ErrNotExist) || err.Error() != "certificate: cannot read certificate file" {
+		t.Errorf("unexpected file error: %v", err)
 	}
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -58,8 +59,8 @@ func TestBadPasswordP12File(t *testing.T) {
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := err.Error(), errors.New("pkcs12: decryption password incorrect").Error(); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
+	if !errors.Is(err, pkcs12.ErrIncorrectPassword) || err.Error() != "certificate: cannot decode PKCS#12 certificate" {
+		t.Errorf("unexpected password error: %v", err)
 	}
 }
 
@@ -122,8 +123,8 @@ func TestNoSuchFilePemFile(t *testing.T) {
 	if got, want := cer, (tls.Certificate{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
-	if got, want := err.Error(), errors.New("open : no such file or directory").Error(); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
+	if !errors.Is(err, os.ErrNotExist) || err.Error() != "certificate: cannot read certificate file" {
+		t.Errorf("unexpected file error: %v", err)
 	}
 }
 

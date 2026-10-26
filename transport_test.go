@@ -1,122 +1,206 @@
-package apns_test
+package apns
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jaakkonakaza/apns"
 )
 
-func TestTransportAuthenticationAndReuse(t *testing.T) {
-	for _, tokenAuth := range []bool{false, true} {
-		name := "certificate"
-		if tokenAuth {
-			name = "token"
+func transportCertificate(t testing.TB) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "transport fixture"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{"localhost", "api.sandbox.push.apple.com"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}, BasicConstraintsValid: true, IsCA: true}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
+}
+
+func transportServer(t testing.TB, protocol string, handler http.Handler, configure ...func(*httptest.Server)) (*httptest.Server, *x509.CertPool) {
+	t.Helper()
+	certificate, roots := transportCertificate(t)
+	server := httptest.NewUnstartedServer(handler)
+	server.EnableHTTP2 = protocol == "h2"
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}}
+	if protocol == "none" {
+		server.TLS.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			return &tls.Config{Certificates: []tls.Certificate{certificate}}, nil
 		}
-		t.Run(name, func(t *testing.T) {
+	}
+	for _, setup := range configure {
+		setup(server)
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return server, roots
+}
+
+func transportDo(t *testing.T, tr *http.Transport, ctx context.Context, endpoint string) error {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "bearer synthetic")
+	resp, err := tr.RoundTrip(prepareRequest(req, tr.Proxy != nil))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.Copy(io.Discard, resp.Body)
+	return err
+}
+
+func transportFrom(t *testing.T, cfg Config, certs ...tls.Certificate) *http.Transport {
+	t.Helper()
+	tr, err := makeTransport(&tls.Config{Certificates: certs}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+	return tr
+}
+
+func TestTransportOwnsTLSAndReusesConnections(t *testing.T) {
+	for _, certificateAuth := range []bool{false, true} {
+		t.Run(fmt.Sprint(certificateAuth), func(t *testing.T) {
 			var connections atomic.Int32
-			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.ProtoMajor != 2 {
-					t.Errorf("protocol = %s", r.Proto)
+			offered := make(chan []string, 2)
+			server, roots := transportServer(t, "h2", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.ProtoMajor != 2 || r.TLS.NegotiatedProtocol != "h2" {
+					t.Error("origin is not HTTP/2")
 				}
-				if tokenAuth {
-					if r.Header.Get("Authorization") == "" {
-						t.Error("missing token authorization")
-					}
-				} else if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
-					t.Error("missing client certificate")
+				if certificateAuth && len(r.TLS.PeerCertificates) != 1 {
+					t.Error("missing constructor certificate")
 				}
-				_, _ = io.Copy(io.Discard, r.Body)
+				if !certificateAuth && r.Header.Get("Authorization") != "bearer synthetic" {
+					t.Error("missing bearer")
+				}
 				w.WriteHeader(http.StatusOK)
-			}))
-			server.EnableHTTP2 = true
-			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-				if state == http.StateNew {
-					connections.Add(1)
+			}), func(server *httptest.Server) {
+				server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+					if state == http.StateNew {
+						connections.Add(1)
+					}
 				}
+				server.TLS.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+					offered <- append([]string(nil), hello.SupportedProtos...)
+					return nil, nil
+				}
+				if certificateAuth {
+					server.TLS.ClientAuth = tls.RequireAnyClientCert
+				}
+			})
+			var rawCalls atomic.Int32
+			cfg := Config{Environment: Sandbox, Transport: TransportConfig{RootCAs: roots, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				rawCalls.Add(1)
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			}}}
+			var certificates []tls.Certificate
+			if certificateAuth {
+				certificates = server.TLS.Certificates
 			}
-			if !tokenAuth {
-				server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
-			}
-			server.StartTLS()
-			defer server.Close()
-			options := []apns.ClientOption{
-				apns.WithHost(server.URL),
-				apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig),
-			}
-			var client *apns.Client
-			if tokenAuth {
-				client = mustTokenClient(t, mockToken(), options...)
-			} else {
-				client = mustClient(t, server.TLS.Certificates[0], options...)
-			}
-			defer client.CloseIdleConnections()
+			tr := transportFrom(t, cfg, certificates...)
 			for range 2 {
-				response, err := client.Push(context.Background(), mockNotification())
-				if err != nil || response == nil || !response.Success() {
-					t.Fatalf("push = %v, %v", response, err)
+				if err := transportDo(t, tr, context.Background(), server.URL); err != nil {
+					t.Fatal(err)
 				}
 			}
-			if got := connections.Load(); got != 1 {
-				t.Errorf("connections = %d, want 1", got)
+			if connections.Load() != 1 || rawCalls.Load() != 1 {
+				t.Fatalf("connections=%d raw calls=%d", connections.Load(), rawCalls.Load())
+			}
+			if protocols := <-offered; len(protocols) != 1 || protocols[0] != "h2" {
+				t.Fatalf("offered ALPN=%v", protocols)
+			}
+			tr.CloseIdleConnections()
+			if err := transportDo(t, tr, context.Background(), server.URL); err != nil {
+				t.Fatal(err)
+			}
+			if connections.Load() != 2 {
+				t.Fatalf("CloseIdleConnections did not permit a fresh connection: connections=%d, raw calls=%d", connections.Load(), rawCalls.Load())
 			}
 		})
 	}
 }
 
-func newConnectProxy(t *testing.T, secure bool) (*httptest.Server, *atomic.Int32) {
-	t.Helper()
-	return newDelayedConnectProxy(t, secure, 0)
+func TestTransportRejectsUntrustedAndNonHTTP2Origins(t *testing.T) {
+	for _, protocol := range []string{"h2", "http/1.1", "none"} {
+		t.Run(protocol, func(t *testing.T) {
+			var requests atomic.Int32
+			server, roots := transportServer(t, protocol, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+			cfg := Config{Environment: Sandbox}
+			if protocol != "h2" {
+				cfg.Transport.RootCAs = roots
+			}
+			err := transportDo(t, transportFrom(t, cfg), context.Background(), server.URL)
+			if err == nil || requests.Load() != 0 {
+				t.Fatalf("untrusted/non-h2 accepted: %v, requests=%d", err, requests.Load())
+			}
+		})
+	}
 }
 
-// newDelayedConnectProxy waits for delay before answering CONNECT.
-func newDelayedConnectProxy(t *testing.T, secure bool, delay time.Duration) (*httptest.Server, *atomic.Int32) {
+func transportProxy(t *testing.T, secure bool, delay time.Duration, inspect func(*http.Request)) (*httptest.Server, *x509.CertPool, *atomic.Int32) {
 	t.Helper()
 	var connects atomic.Int32
-	proxy := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
-			t.Errorf("proxy method = %s", r.Method)
-			http.Error(w, "CONNECT required", http.StatusBadRequest)
+			t.Error("proxy received non-CONNECT request")
+			http.Error(w, "CONNECT required", 400)
 			return
+		}
+		if inspect != nil {
+			inspect(r)
 		}
 		target, err := net.DialTimeout("tcp", r.Host, time.Second)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			http.Error(w, "unreachable fixture", http.StatusBadGateway)
 			return
 		}
 		defer func() { _ = target.Close() }()
-		hijacker, ok := w.(http.Hijacker)
-		if !ok {
-			t.Error("proxy cannot hijack connection")
-			return
-		}
-		conn, buf, err := hijacker.Hijack()
+		conn, buf, err := w.(http.Hijacker).Hijack()
 		if err != nil {
-			t.Error(err)
 			return
 		}
 		defer func() { _ = conn.Close() }()
 		connects.Add(1)
-		time.Sleep(delay)
-		if _, err := buf.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-			t.Error(err)
+		if delay != 0 {
+			time.Sleep(delay)
+		}
+		if _, err = buf.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 			return
 		}
-		if err := buf.Flush(); err != nil {
-			t.Error(err)
+		if err = buf.Flush(); err != nil {
 			return
 		}
 		done := make(chan struct{})
@@ -124,450 +208,212 @@ func newDelayedConnectProxy(t *testing.T, secure bool, delay time.Duration) (*ht
 		_, _ = io.Copy(conn, target)
 		_ = conn.Close()
 		<-done
-	}))
+	})
 	if secure {
-		proxy.StartTLS()
-	} else {
-		proxy.Start()
+		server, roots := transportServer(t, "http/1.1", handler, func(server *httptest.Server) { server.TLS.ClientAuth = tls.RequestClientCert })
+		return server, roots, &connects
 	}
-	t.Cleanup(proxy.Close)
-	return proxy, &connects
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return server, nil, &connects
 }
 
-func TestTransportProxyProtocols(t *testing.T) {
-	for _, custom := range []bool{false, true} {
-		for _, secure := range []bool{false, true} {
-			for _, protocol := range []string{"h2", "http/1.1", "no-alpn"} {
-				t.Run(fmt.Sprintf("custom=%t/https-proxy=%t/origin=%s", custom, secure, protocol), func(t *testing.T) {
-					var requests atomic.Int32
-					server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						requests.Add(1)
-						if r.ProtoMajor != 2 {
-							t.Errorf("protocol = %s, want HTTP/2", r.Proto)
-						}
-						w.WriteHeader(http.StatusOK)
-					}))
-					server.EnableHTTP2 = protocol == "h2"
-					if protocol == "no-alpn" {
-						server.TLS = &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
-							cfg := server.TLS.Clone()
-							cfg.GetConfigForClient = nil
-							cfg.NextProtos = nil
-							return cfg, nil
-						}}
+func TestTransportProxyIsolationAndOriginHTTP2(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		for _, protocol := range []string{"h2", "http/1.1", "none"} {
+			t.Run(fmt.Sprintf("secure=%t/%s", secure, protocol), func(t *testing.T) {
+				var requests atomic.Int32
+				origin, roots := transportServer(t, protocol, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if r.ProtoMajor != 2 || len(r.TLS.PeerCertificates) != 1 {
+						t.Error("origin lost h2 or constructor certificate")
 					}
-					server.StartTLS()
-					defer server.Close()
-					proxy, connects := newConnectProxy(t, secure)
-					proxyURL, err := url.Parse(proxy.URL)
-					if err != nil {
-						t.Fatal(err)
+					w.WriteHeader(200)
+				}), func(server *httptest.Server) { server.TLS.ClientAuth = tls.RequireAnyClientCert })
+				proxy, proxyRoots, connects := transportProxy(t, secure, 0, func(r *http.Request) {
+					if r.Header.Get("Authorization") != "" {
+						t.Error("proxy received provider bearer")
 					}
-					var options []apns.ClientOption
-					if custom {
-						options = append(options, apns.WithDialTLSContext(dialWrappedTLS))
-					}
-					roots := server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs.Clone()
-					if secure {
-						roots.AddCert(proxy.Certificate())
-					}
-					options = append(options, apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
-					client := mustTokenClient(t, mockToken(), options...)
-					defer client.CloseIdleConnections()
-					response, err := client.Push(context.Background(), mockNotification())
-					if protocol == "h2" {
-						if err != nil || response == nil || !response.Success() {
-							t.Fatalf("proxy push = %v, %v", response, err)
-						}
-						if requests.Load() != 1 {
-							t.Errorf("origin requests = %d, want 1", requests.Load())
-						}
-					} else {
-						if err == nil {
-							t.Fatalf("accepted %s origin: %v", protocol, response)
-						}
-						if requests.Load() != 0 {
-							t.Errorf("origin received %d requests, want 0", requests.Load())
-						}
-					}
-					if connects.Load() != 1 {
-						t.Errorf("CONNECT requests = %d, want 1", connects.Load())
+					if secure && len(r.TLS.PeerCertificates) != 0 {
+						t.Error("proxy received origin certificate")
 					}
 				})
-			}
-		}
-	}
-}
-
-func TestTransportRejectsRedirects(t *testing.T) {
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("redirect followed") }))
-	defer target.Close()
-	for _, location := range []string{target.URL, ""} {
-		t.Run(map[bool]string{true: "with-location", false: "without-location"}[location != ""], func(t *testing.T) {
-			server := newRedirectServer(t, location)
-			client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
-			defer client.CloseIdleConnections()
-			response, err := client.Push(context.Background(), mockNotification())
-			if location == "" {
-				// Without a Location there is nothing to follow, so the status is reported as is.
-				if err != nil || response == nil || response.StatusCode != http.StatusTemporaryRedirect || response.Success() {
-					t.Fatalf("redirect without location = %v, %v", response, err)
-				}
-				return
-			}
-			if _, ok := errors.AsType[*url.Error](err); !ok {
-				t.Fatalf("redirect error = %T %v, want *url.Error", err, err)
-			}
-		})
-	}
-}
-
-func TestTransportKeepsCallerRedirectPolicy(t *testing.T) {
-	server := newRedirectServer(t, "https://example.com/elsewhere")
-	httpClient := server.Client()
-	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithHTTPClient(httpClient))
-	defer client.CloseIdleConnections()
-	response, err := client.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || response.StatusCode != http.StatusTemporaryRedirect {
-		t.Fatalf("caller redirect policy overridden: %v, %v", response, err)
-	}
-}
-
-func newRedirectServer(t *testing.T, location string) *httptest.Server {
-	t.Helper()
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if location != "" {
-			w.Header().Set("Location", location)
-		}
-		w.WriteHeader(http.StatusTemporaryRedirect)
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	t.Cleanup(server.Close)
-	return server
-}
-
-func TestTransportVerifiesServerCertificate(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("untrusted server received a push")
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
-	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL))
-	defer client.CloseIdleConnections()
-	if _, err := client.Push(context.Background(), mockNotification()); err == nil {
-		t.Fatal("accepted untrusted server certificate")
-	}
-}
-
-type wrappedTLSConn struct{ *tls.Conn }
-
-func TestTransportWrappedTLSConnection(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 2 {
-			t.Errorf("protocol = %s", r.Proto)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
-	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithDialTLSContext(dialWrappedTLS), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
-	defer client.CloseIdleConnections()
-	response, err := client.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Success() {
-		t.Fatalf("wrapped TLS push = %v, %v", response, err)
-	}
-}
-
-func TestTransportDirectALPN(t *testing.T) {
-	offered := make(chan []string, 1)
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 2 {
-			t.Errorf("protocol = %s", r.Proto)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	server.EnableHTTP2 = true
-	server.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		offered <- append([]string(nil), hello.SupportedProtos...)
-		return nil, nil
-	}}
-	server.StartTLS()
-	defer server.Close()
-	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
-	defer client.CloseIdleConnections()
-	response, err := client.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Success() {
-		t.Fatalf("direct push = %v, %v", response, err)
-	}
-	if protocols := <-offered; len(protocols) != 1 || protocols[0] != "h2" {
-		t.Errorf("offered ALPN = %v, want [h2]", protocols)
-	}
-}
-
-func TestTransportDialerReceivesDeadline(t *testing.T) {
-	const timeout = 20 * time.Millisecond
-	stopped := make(chan struct{})
-	dial := func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
-		defer close(stopped)
-		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > timeout {
-			return nil, errors.New("dial timeout was not applied")
-		}
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	client := mustTokenClient(t, mockToken(), apns.WithHost(apns.HostDevelopment), apns.WithDialTimeout(timeout), apns.WithDialTLSContext(dial))
-	defer client.CloseIdleConnections()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := client.Push(ctx, mockNotification()); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("push error = %v, want dial deadline exceeded", err)
-	}
-	if ctx.Err() != nil {
-		t.Fatal("request context expired before dial timeout")
-	}
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("TLS dialer did not stop")
-	}
-}
-
-// Wrappers such as tracing transports must not disable HTTP/2 enforcement.
-func TestTransportWrappedRoundTripperEnforcesHTTP2(t *testing.T) {
-	for _, protocol := range []string{"h2", "http/1.1", "plaintext"} {
-		t.Run(protocol, func(t *testing.T) {
-			var requests atomic.Int32
-			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				w.WriteHeader(http.StatusOK)
-			}))
-			server.EnableHTTP2 = protocol == "h2"
-			if protocol == "plaintext" {
-				server.Start()
-			} else {
-				server.StartTLS()
-			}
-			defer server.Close()
-			var wrapped atomic.Int32
-			options := []apns.ClientOption{
-				apns.WithHost(server.URL),
-				apns.WithTransportWrapper(func(next http.RoundTripper) http.RoundTripper {
-					return roundTripFunc(func(r *http.Request) (*http.Response, error) {
-						wrapped.Add(1)
-						return next.RoundTrip(r)
-					})
-				}),
-			}
-			if protocol != "plaintext" {
-				options = append(options, apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
-			}
-			client, err := apns.NewTokenClient(mockToken(), options...)
-			if protocol == "plaintext" {
-				if err == nil || client != nil {
-					t.Fatalf("plaintext constructor = %v, %v", client, err)
-				}
-				if requests.Load() != 0 || wrapped.Load() != 0 {
-					t.Fatal("plaintext endpoint reached transport")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer client.CloseIdleConnections()
-			response, err := client.Push(context.Background(), mockNotification())
-			if wrapped.Load() != 1 {
-				t.Fatalf("wrapper calls = %d, want 1", wrapped.Load())
-			}
-			if protocol == "h2" {
-				if err != nil || response == nil || !response.Success() {
-					t.Fatalf("wrapped h2 push = %v, %v", response, err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("wrapped HTTP/1.1 push accepted: %v", response)
-			}
-			if requests.Load() != 0 {
-				t.Errorf("origin received %d requests, want 0", requests.Load())
-			}
-		})
-	}
-}
-
-func TestTransportProxyOriginALPN(t *testing.T) {
-	for _, secure := range []bool{false, true} {
-		t.Run(fmt.Sprintf("https-proxy=%t", secure), func(t *testing.T) {
-			offered := make(chan []string, 1)
-			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-			server.EnableHTTP2 = true
-			server.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-				offered <- append([]string(nil), hello.SupportedProtos...)
-				return nil, nil
-			}}
-			server.StartTLS()
-			defer server.Close()
-			proxy, _ := newConnectProxy(t, secure)
-			proxyURL, err := url.Parse(proxy.URL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			roots := server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs.Clone()
-			if secure {
-				roots.AddCert(proxy.Certificate())
-			}
-			client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
-			defer client.CloseIdleConnections()
-			response, err := client.Push(context.Background(), mockNotification())
-			if err != nil || response == nil || !response.Success() {
-				t.Fatalf("proxy push = %v, %v", response, err)
-			}
-			if protocols := <-offered; len(protocols) != 1 || protocols[0] != "h2" {
-				t.Errorf("origin offered ALPN = %v, want [h2]", protocols)
-			}
-		})
-	}
-}
-
-// One dial timeout covers the proxy dial, CONNECT, and origin handshake.
-func TestTransportProxyDialBudget(t *testing.T) {
-	const budget = 400 * time.Millisecond
-	for _, secure := range []bool{false, true} {
-		t.Run(fmt.Sprintf("https-proxy=%t", secure), func(t *testing.T) {
-			// The origin accepts TCP but never answers the TLS handshake.
-			origin, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = origin.Close() }()
-			go func() {
-				for {
-					conn, err := origin.Accept()
-					if err != nil {
-						return
+				proxyURL, _ := url.Parse(proxy.URL)
+				cfg := Config{Environment: Sandbox, Transport: TransportConfig{RootCAs: roots, ProxyRootCAs: proxyRoots, Proxy: http.ProxyURL(proxyURL)}}
+				tr := transportFrom(t, cfg, origin.TLS.Certificates...)
+				err := transportDo(t, tr, context.Background(), origin.URL)
+				if protocol == "h2" {
+					if err != nil || requests.Load() != 1 {
+						t.Fatalf("proxy request failed: %v requests=%d", err, requests.Load())
 					}
-					t.Cleanup(func() { _ = conn.Close() })
+				} else if err == nil || requests.Load() != 0 {
+					t.Fatalf("non-h2 reached origin: %v requests=%d", err, requests.Load())
 				}
-			}()
-			proxy, _ := newDelayedConnectProxy(t, secure, budget*7/8)
-			proxyURL, err := url.Parse(proxy.URL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			roots := x509.NewCertPool()
-			if secure {
-				roots.AddCert(proxy.Certificate())
-			}
-			client := mustTokenClient(t, mockToken(), apns.WithDialTimeout(budget), apns.WithHost("https://"+origin.Addr().String()), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
-			defer client.CloseIdleConnections()
-			started := time.Now()
-			if _, err := client.Push(context.Background(), mockNotification()); err == nil {
-				t.Fatal("stalled origin accepted")
-			}
-			// Separate budgets would take about budget*7/8 + budget.
-			if elapsed := time.Since(started); elapsed >= budget*3/2 {
-				t.Fatalf("proxied dial took %s with dial timeout=%s", elapsed, budget)
-			}
-		})
+				if connects.Load() != 1 {
+					t.Fatalf("CONNECTs=%d", connects.Load())
+				}
+			})
+		}
 	}
 }
 
-// The proxy deadline is cleared after the origin handshake.
-func TestTransportProxyConnectionOutlivesDialBudget(t *testing.T) {
-	const budget = 200 * time.Millisecond
-	for _, secure := range []bool{false, true} {
-		t.Run(fmt.Sprintf("https-proxy=%t", secure), func(t *testing.T) {
-			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-			server.EnableHTTP2 = true
-			server.StartTLS()
-			defer server.Close()
-			proxy, connects := newConnectProxy(t, secure)
-			proxyURL, err := url.Parse(proxy.URL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			roots := server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs.Clone()
-			if secure {
-				roots.AddCert(proxy.Certificate())
-			}
-			client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{RootCAs: roots}), apns.WithDialTimeout(budget))
-			defer client.CloseIdleConnections()
-			for i := range 2 {
-				response, err := client.Push(context.Background(), mockNotification())
-				if err != nil || response == nil || !response.Success() {
-					t.Fatalf("push %d = %v, %v", i, response, err)
-				}
-				time.Sleep(budget * 2)
-			}
-			if connects.Load() != 1 {
-				t.Errorf("CONNECT requests = %d, want 1", connects.Load())
-			}
-		})
+func TestHTTPSProxyDoesNotInheritOriginTrust(t *testing.T) {
+	origin, originRoots := transportServer(t, "h2", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+	proxy, proxyRoots, connects := transportProxy(t, true, 0, nil)
+	proxyURL, _ := url.Parse(proxy.URL)
+	// Trust both certificates for the origin. The independent nil proxy pool
+	// must still use system trust and reject the private proxy certificate.
+	originRoots.AddCert(proxy.Certificate())
+	cfg := Config{Environment: Sandbox, Transport: TransportConfig{RootCAs: originRoots, Proxy: http.ProxyURL(proxyURL)}}
+	if err := transportDo(t, transportFrom(t, cfg), context.Background(), origin.URL); err == nil || connects.Load() != 0 {
+		t.Fatalf("proxy inherited origin roots: %v", err)
+	}
+	cfg.Transport.ProxyRootCAs = proxyRoots
+	if err := transportDo(t, transportFrom(t, cfg), context.Background(), origin.URL); err != nil {
+		t.Fatal(err)
+	}
+	// Trusting only the proxy must not grant trust to the private origin.
+	cfg.Transport.RootCAs = nil
+	if err := transportDo(t, transportFrom(t, cfg), context.Background(), origin.URL); err == nil {
+		t.Fatal("origin inherited proxy roots")
 	}
 }
 
-func TestTransportZeroDialTimeout(t *testing.T) {
-	for _, route := range []string{"direct", "http-proxy", "https-proxy"} {
-		t.Run(route, func(t *testing.T) {
-			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.ProtoMajor != 2 {
-					t.Errorf("protocol = %s", r.Proto)
+func TestTransportRawDialDeadlineAndNilResults(t *testing.T) {
+	for _, proxyScheme := range []string{"", "http", "https"} {
+		t.Run("deadline/"+proxyScheme, func(t *testing.T) {
+			cfg := Config{Environment: Sandbox, Transport: TransportConfig{DialTimeout: new(20 * time.Millisecond), DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 20*time.Millisecond {
+					return nil, errors.New("dial deadline missing")
 				}
-				w.WriteHeader(http.StatusOK)
-			}))
-			server.EnableHTTP2 = true
-			server.StartTLS()
-			defer server.Close()
-			roots := server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs.Clone()
-			options := []apns.ClientOption{apns.WithDialTimeout(0), apns.WithHost(server.URL)}
-			if route != "direct" {
-				proxy, _ := newConnectProxy(t, route == "https-proxy")
-				proxyURL, err := url.Parse(proxy.URL)
-				if err != nil {
-					t.Fatal(err)
-				}
-				options = append(options, apns.WithProxy(http.ProxyURL(proxyURL)))
-				if route == "https-proxy" {
-					roots.AddCert(proxy.Certificate())
-				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}}}
+			if proxyScheme != "" {
+				cfg.Transport.Proxy = http.ProxyURL(&url.URL{Scheme: proxyScheme, Host: "proxy.example:443"})
 			}
-			options = append(options, apns.WithTLSConfig(&tls.Config{RootCAs: roots}))
-			client := mustTokenClient(t, mockToken(), options...)
-			defer client.CloseIdleConnections()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			response, err := client.Push(ctx, mockNotification())
-			if err != nil || response == nil || !response.Success() {
-				t.Fatalf("zero-timeout push = %v, %v", response, err)
+			if err := transportDo(t, transportFrom(t, cfg), ctx, "https://api.sandbox.push.apple.com"); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("dial failure=%v", err)
+			}
+			if ctx.Err() != nil {
+				t.Fatal("request deadline preceded dial timeout")
+			}
+		})
+		for _, typed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("nil/%s/%t", proxyScheme, typed), func(t *testing.T) {
+				cfg := Config{Environment: Sandbox, Transport: TransportConfig{DialContext: func(context.Context, string, string) (net.Conn, error) {
+					if typed {
+						var c *net.TCPConn
+						return c, nil
+					}
+					return nil, nil
+				}}}
+				if proxyScheme != "" {
+					cfg.Transport.Proxy = http.ProxyURL(&url.URL{Scheme: proxyScheme, Host: "proxy.example:443"})
+				}
+				if err := transportDo(t, transportFrom(t, cfg), context.Background(), "https://api.sandbox.push.apple.com"); err == nil {
+					t.Fatal("nil connection accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestTransportZeroDialStillHonorsContext(t *testing.T) {
+	cfg := Config{Environment: Sandbox, Transport: TransportConfig{DialTimeout: new(time.Duration(0)), DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { <-ctx.Done(); return nil, ctx.Err() }}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := transportDo(t, transportFrom(t, cfg), ctx, "https://api.sandbox.push.apple.com"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("zero dial lost caller cancellation: %v", err)
+	}
+}
+
+func TestTransportProxyCompleteDialBudget(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		t.Run(fmt.Sprint(secure), func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stop, done := make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(done)
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				<-stop
+			}()
+			t.Cleanup(func() { close(stop); _ = listener.Close(); <-done })
+			const budget = 300 * time.Millisecond
+			proxy, roots, _ := transportProxy(t, secure, budget*7/8, nil)
+			proxyURL, _ := url.Parse(proxy.URL)
+			cfg := Config{Environment: Sandbox, Transport: TransportConfig{DialTimeout: new(budget), ProxyRootCAs: roots, Proxy: http.ProxyURL(proxyURL)}}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			started := time.Now()
+			if err := transportDo(t, transportFrom(t, cfg), ctx, "https://"+listener.Addr().String()); err == nil {
+				t.Fatal("unresponsive origin accepted")
+			}
+			if elapsed := time.Since(started); elapsed >= budget*3/2 {
+				t.Fatalf("CONNECT and TLS received separate budgets: %s", elapsed)
 			}
 		})
 	}
 }
 
-func dialWrappedTLS(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-	conn, err := (&tls.Dialer{Config: cfg}).DialContext(ctx, network, addr)
-	if err != nil {
-		return nil, err
+func TestTransportProxyDeadlineReleasedAfterTLS(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		t.Run(fmt.Sprint(secure), func(t *testing.T) {
+			origin, roots := transportServer(t, "h2", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+			proxy, proxyRoots, connects := transportProxy(t, secure, 0, nil)
+			proxyURL, _ := url.Parse(proxy.URL)
+			const budget = 80 * time.Millisecond
+			cfg := Config{Environment: Sandbox, Transport: TransportConfig{RootCAs: roots, ProxyRootCAs: proxyRoots, Proxy: http.ProxyURL(proxyURL), DialTimeout: new(budget)}}
+			tr := transportFrom(t, cfg)
+			if err := transportDo(t, tr, context.Background(), origin.URL); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(budget * 2)
+			if err := transportDo(t, tr, context.Background(), origin.URL); err != nil {
+				t.Fatal(err)
+			}
+			if connects.Load() != 1 {
+				t.Fatalf("connection did not outlive dial budget: %d CONNECTs", connects.Load())
+			}
+		})
 	}
-	return &wrappedTLSConn{conn.(*tls.Conn)}, nil
 }
 
-func TestTransportIdlePings(t *testing.T) {
-	fixture := httptest.NewTLSServer(http.NotFoundHandler())
-	defer fixture.Close()
-	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
-		Certificates: fixture.TLS.Certificates,
-		NextProtos:   []string{"h2"},
-	})
+func TestTransportClosesRejectedRawTLSConnection(t *testing.T) {
+	origin, roots := transportServer(t, "h2", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("request reached rejected hook connection") }))
+	var supplied *tls.Conn
+	cfg := Config{Environment: Sandbox, Transport: TransportConfig{RootCAs: roots, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var err error
+		conn, err := (&tls.Dialer{Config: &tls.Config{RootCAs: roots, NextProtos: []string{"h2"}}}).DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		supplied = conn.(*tls.Conn)
+		return supplied, nil
+	}}}
+	if err := transportDo(t, transportFrom(t, cfg), context.Background(), origin.URL); err == nil {
+		t.Fatal("already handshaken hook accepted")
+	}
+	if supplied == nil {
+		t.Fatal("fixture handshake did not complete")
+	}
+	if _, err := supplied.Write([]byte("closed")); err == nil {
+		t.Fatal("rejected connection remained open")
+	}
+}
+
+func TestTransportHTTP2HealthChecks(t *testing.T) {
+	certificate, roots := transportCertificate(t)
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{certificate}, NextProtos: []string{"h2"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,26 +428,21 @@ func TestTransportIdlePings(t *testing.T) {
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
-			pings <- err
-			return
-		}
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 		preface := make([]byte, 24)
 		if _, err := io.ReadFull(conn, preface); err != nil {
 			pings <- err
 			return
 		}
 		if string(preface) != "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
-			pings <- fmt.Errorf("invalid HTTP/2 preface")
+			pings <- errors.New("invalid h2 preface")
 			return
 		}
-		// Empty SETTINGS lets the client start a request without a response from the peer.
 		if _, err := conn.Write([]byte{0, 0, 0, 4, 0, 0, 0, 0, 0}); err != nil {
 			pings <- err
 			return
 		}
-		count := 0
-		for count < 2 {
+		for count := 0; count < 2; {
 			var header [9]byte
 			if _, err := io.ReadFull(conn, header[:]); err != nil {
 				pings <- err
@@ -609,7 +450,7 @@ func TestTransportIdlePings(t *testing.T) {
 			}
 			size := int(header[0])<<16 | int(header[1])<<8 | int(header[2])
 			if size > 1<<20 {
-				pings <- fmt.Errorf("unexpected frame size %d", size)
+				pings <- errors.New("oversized frame")
 				return
 			}
 			body := make([]byte, size)
@@ -621,10 +462,9 @@ func TestTransportIdlePings(t *testing.T) {
 				continue
 			}
 			if size != 8 || binary.BigEndian.Uint32(header[5:]) != 0 {
-				pings <- fmt.Errorf("invalid PING frame")
+				pings <- errors.New("invalid ping frame")
 				return
 			}
-			// Echo the opaque payload with ACK set, keeping the connection healthy.
 			header[4] = 1
 			if _, err := conn.Write(append(header[:], body...)); err != nil {
 				pings <- err
@@ -635,139 +475,80 @@ func TestTransportIdlePings(t *testing.T) {
 		pings <- nil
 		<-stop
 	}()
-	client := mustTokenClient(t, mockToken(),
-		apns.WithHost("https://"+listener.Addr().String()),
-		apns.WithTLSConfig(fixture.Client().Transport.(*http.Transport).TLSClientConfig),
-		apns.WithReadIdleTimeout(20*time.Millisecond),
-	)
-	defer client.CloseIdleConnections()
+	cfg := Config{Environment: Sandbox, Transport: TransportConfig{RootCAs: roots, HTTP2: HTTP2Config{ReadIdleTimeout: new(20 * time.Millisecond)}}}
+	tr := transportFrom(t, cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pushed := make(chan error, 1)
-	go func() { _, err := client.Push(ctx, mockNotification()); pushed <- err }()
+	result := make(chan error, 1)
+	go func() { result <- transportDo(t, tr, ctx, "https://"+listener.Addr().String()) }()
 	select {
 	case err := <-pings:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-time.After(4 * time.Second):
-		t.Fatal("HTTP/2 idle PINGs were not received")
+		t.Fatal("HTTP/2 idle pings not observed")
 	}
 	cancel()
 	select {
-	case err := <-pushed:
+	case err := <-result:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("push error = %v, want cancellation", err)
+			t.Fatalf("cancellation=%v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("push did not stop after cancellation")
+		t.Fatal("cancelled request did not exit")
 	}
 }
 
-func TestHTTPSProxyHasIndependentTLSVerification(t *testing.T) {
-	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	origin.EnableHTTP2 = true
-	origin.StartTLS()
-	defer origin.Close()
-	proxy, _ := newConnectProxy(t, true)
-	proxyURL, err := url.Parse(proxy.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots := origin.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs.Clone()
-	roots.AddCert(proxy.Certificate())
-	var verified atomic.Int32
-	client := mustTokenClient(t, mockToken(), apns.WithHost(origin.URL), apns.WithProxy(http.ProxyURL(proxyURL)), apns.WithTLSConfig(&tls.Config{
-		RootCAs:    roots,
-		ServerName: "example.com",
-		VerifyConnection: func(state tls.ConnectionState) error {
-			verified.Add(1)
-			if state.ServerName != "example.com" || state.NegotiatedProtocol != "h2" {
-				return fmt.Errorf("origin verifier received proxy state: %s, %s", state.ServerName, state.NegotiatedProtocol)
+func TestTransportClonesTrustPoolsBeforeFirstConnection(t *testing.T) {
+	origin, originRoots := transportServer(t, "h2", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+	proxy, proxyRoots, _ := transportProxy(t, true, 0, nil)
+	proxyURL, _ := url.Parse(proxy.URL)
+	for _, poolKind := range []string{"origin", "proxy"} {
+		t.Run(poolKind, func(t *testing.T) {
+			untrusted := x509.NewCertPool()
+			cfg := Config{Environment: Sandbox, Transport: TransportConfig{RootCAs: originRoots, ProxyRootCAs: proxyRoots, Proxy: http.ProxyURL(proxyURL)}}
+			var add *x509.Certificate
+			if poolKind == "origin" {
+				cfg.Transport.RootCAs = untrusted
+				add = origin.Certificate()
+			} else {
+				cfg.Transport.ProxyRootCAs = untrusted
+				add = proxy.Certificate()
 			}
-			return nil
-		},
-	}))
-	defer client.CloseIdleConnections()
-	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Success() {
-		t.Fatalf("proxy push = %v, %v", response, err)
-	}
-	if verified.Load() != 1 {
-		t.Fatalf("origin verification calls = %d, want 1", verified.Load())
-	}
-}
-
-func TestConstructorCertificateOverridesCallback(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(r.TLS.PeerCertificates) != 1 {
-			t.Error("missing constructor certificate")
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	server.EnableHTTP2 = true
-	server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
-	server.StartTLS()
-	defer server.Close()
-	config := server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
-	config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-		return nil, errors.New("origin callback must not override constructor certificate")
-	}
-	client := mustClient(t, server.TLS.Certificates[0], apns.WithHost(server.URL), apns.WithTLSConfig(config))
-	defer client.CloseIdleConnections()
-	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Success() {
-		t.Fatalf("certificate push = %v, %v", response, err)
-	}
-	if config.GetClientCertificate == nil {
-		t.Error("constructor changed supplied TLS configuration")
+			tr := transportFrom(t, cfg)
+			untrusted.AddCert(add)
+			if err := transportDo(t, tr, context.Background(), origin.URL); err == nil {
+				t.Fatal("transport retained caller's mutable trust pool")
+			}
+			if err := transportDo(t, transportFrom(t, cfg), context.Background(), origin.URL); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
-func TestTLSDialerNilResultsReturnError(t *testing.T) {
-	for _, proxy := range []bool{false, true} {
-		for _, typed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("proxy=%t/typed=%t", proxy, typed), func(t *testing.T) {
-				options := []apns.ClientOption{apns.WithDialTLSContext(func(context.Context, string, string, *tls.Config) (net.Conn, error) {
-					if typed {
-						var conn *tls.Conn
-						return conn, nil
-					}
-					return nil, nil
-				})}
-				if proxy {
-					options = append(options, apns.WithProxy(http.ProxyURL(&url.URL{Scheme: "https", Host: "proxy.example.com:443"})))
-				}
-				options = append(options, apns.WithHost(apns.HostDevelopment))
-				client := mustTokenClient(t, mockToken(), options...)
-				defer client.CloseIdleConnections()
-				_, err := client.Push(context.Background(), mockNotification())
-				if err == nil || !strings.Contains(err.Error(), "nil connection") {
-					t.Fatalf("push error = %v, want nil connection error", err)
-				}
-			})
-		}
-	}
+type transportTrackedConn struct {
+	net.Conn
+	closed *atomic.Bool
 }
 
-func TestCustomHTTPClientOwnsCertificate(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(r.TLS.PeerCertificates) != 1 {
-			t.Error("missing custom HTTP client certificate")
+func (c transportTrackedConn) Close() error { c.closed.Store(true); return c.Conn.Close() }
+
+func TestTransportClosesRawConnectionAfterTLSFailure(t *testing.T) {
+	origin, _ := transportServer(t, "h2", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("untrusted origin received request") }))
+	var closed atomic.Bool
+	cfg := Config{Environment: Sandbox, Transport: TransportConfig{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
 		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
-	server.StartTLS()
-	defer server.Close()
-	httpClient := server.Client()
-	transport := httpClient.Transport.(*http.Transport).Clone()
-	transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-	transport.TLSClientConfig.Certificates = server.TLS.Certificates
-	httpClient.Transport = transport
-	client := mustClient(t, mockCert(), apns.WithHost(server.URL), apns.WithHTTPClient(httpClient))
-	defer client.CloseIdleConnections()
-	if response, err := client.Push(context.Background(), mockNotification()); err != nil || response == nil || !response.Success() {
-		t.Fatalf("custom certificate push = %v, %v", response, err)
+		return transportTrackedConn{Conn: conn, closed: &closed}, nil
+	}}}
+	if err := transportDo(t, transportFrom(t, cfg), context.Background(), origin.URL); err == nil {
+		t.Fatal("untrusted TLS accepted")
+	}
+	if !closed.Load() {
+		t.Fatal("owned raw connection was not closed after TLS failure")
 	}
 }

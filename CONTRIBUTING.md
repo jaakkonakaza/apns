@@ -26,6 +26,9 @@ servers and fixtures and do not require Apple credentials or a device. Live
 APNs testing is separate and requires your own credentials and test device.
 Do not commit signing keys, bearer tokens, or device tokens.
 
+`make check` includes `go fix -diff ./...` to catch Go modernization suggestions
+also reported by gopls in Zed. Review fixes before applying them with `go fix`.
+
 ## Releases
 
 Describe user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).

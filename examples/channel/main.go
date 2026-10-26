@@ -44,7 +44,7 @@ func run(ctx context.Context, args []string, output, diagnostics io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("load certificate: %w", err)
 	}
-	client, err := apns.NewClient(cert, apns.WithHost(apns.HostProduction))
+	client, err := apns.NewCertificateClient(cert, apns.Config{Environment: apns.Production})
 	if err != nil {
 		return err
 	}
@@ -52,12 +52,12 @@ func run(ctx context.Context, args []string, output, diagnostics io.Writer) erro
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	results := sendNotifications(ctx, client, *count, min(*workers, *count), func(i int) *apns.Notification {
-		return &apns.Notification{
+	results := sendNotifications(ctx, client, *count, min(*workers, *count), func(i int) apns.Request {
+		return apns.Request{
 			DeviceToken: *deviceToken,
 			Topic:       *topic,
 			PushType:    apns.PushTypeAlert,
-			Payload:     payload.NewPayload().Alert(fmt.Sprintf("Hello! %d", i)),
+			Payload:     payload.Notification{APS: payload.APS{Alert: &payload.Alert{Body: fmt.Sprintf("Hello! %d", i)}}},
 		}
 	})
 	defer func() {
@@ -75,10 +75,7 @@ func run(ctx context.Context, args []string, output, diagnostics io.Writer) erro
 			continue
 		}
 		response := result.Response
-		if !response.Success() {
-			failed++
-		}
-		if _, err := fmt.Fprintf(output, "%d: %d %s %s\n", result.Index, response.StatusCode, response.APNSID, response.Reason); err != nil {
+		if _, err := fmt.Fprintf(output, "%d: %d %s\n", result.Index, response.StatusCode, response.APNSID); err != nil {
 			return err
 		}
 	}
@@ -92,18 +89,18 @@ func run(ctx context.Context, args []string, output, diagnostics io.Writer) erro
 }
 
 type pusher interface {
-	Push(context.Context, *apns.Notification) (*apns.Response, error)
+	Push(context.Context, apns.Request) (apns.Response, error)
 }
 
 type sendResult struct {
 	Index    int
-	Response *apns.Response
+	Response apns.Response
 	Err      error
 }
 
 // sendNotifications bounds work and buffered results by the worker count.
 // The caller drains results or cancels ctx before returning.
-func sendNotifications(ctx context.Context, client pusher, count, workers int, notification func(int) *apns.Notification) <-chan sendResult {
+func sendNotifications(ctx context.Context, client pusher, count, workers int, notification func(int) apns.Request) <-chan sendResult {
 	jobs := make(chan int)
 	results := make(chan sendResult, workers)
 	var pending sync.WaitGroup

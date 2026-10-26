@@ -1,163 +1,99 @@
-package apns_test
+package apns
 
 import (
-	"context"
 	"crypto/tls"
-	"errors"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
+	"crypto/x509"
 	"testing"
 	"time"
-
-	"github.com/jaakkonakaza/apns"
 )
 
-func TestClientRequestTimeoutsAreIndependent(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(80 * time.Millisecond):
-			w.WriteHeader(http.StatusOK)
-		case <-r.Context().Done():
+func TestTransportConfigDefaultsAndExplicitZero(t *testing.T) {
+	for _, explicitZero := range []bool{false, true} {
+		cfg := Config{Environment: Sandbox}
+		if explicitZero {
+			cfg.RequestTimeout = new(time.Duration(0))
+			cfg.Transport.DialTimeout = new(time.Duration(0))
+			cfg.Transport.IdleConnTimeout = new(time.Duration(0))
+			cfg.Transport.HTTP2.ReadIdleTimeout = new(time.Duration(0))
+			cfg.Transport.HTTP2.WriteByteTimeout = new(time.Duration(0))
 		}
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
-	tlsOption := apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)
-	short := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), tlsOption, apns.WithTimeout(20*time.Millisecond))
-	long := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), tlsOption, apns.WithTimeout(time.Second))
-	defer short.CloseIdleConnections()
-	defer long.CloseIdleConnections()
-	shortResult := make(chan error, 1)
-	go func() { _, err := short.Push(context.Background(), mockNotification()); shortResult <- err }()
-	response, err := long.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Success() {
-		t.Fatalf("long-timeout push = %v, %v", response, err)
-	}
-	if err := <-shortResult; !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("short-timeout push = %v, want deadline exceeded", err)
+		tr, err := makeTransport(&tls.Config{}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantRequest, wantDial, wantIdle := 60*time.Second, 20*time.Second, 15*time.Second
+		if explicitZero {
+			wantRequest, wantDial, wantIdle = 0, 0, 0
+		}
+		if requestTimeout(cfg) != wantRequest || tr.TLSHandshakeTimeout != wantDial || tr.HTTP2.SendPingTimeout != wantIdle {
+			t.Fatalf("explicit zero=%t: timeout defaults differ", explicitZero)
+		}
+		if tr.HTTP2.PingTimeout != 15*time.Second || tr.IdleConnTimeout != 0 || tr.HTTP2.WriteByteTimeout != 0 {
+			t.Fatal("unexpected ping/idle/write defaults")
+		}
+		if tr.Protocols.HTTP1() || !tr.Protocols.HTTP2() || tr.Protocols.UnencryptedHTTP2() {
+			t.Fatal("transport must support only encrypted HTTP/2")
+		}
 	}
 }
 
-func TestClientDialersAndTLSSettingsAreIndependent(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 2 {
-			t.Errorf("protocol = %s", r.Proto)
+func TestTransportConfigRejectsInvalidValues(t *testing.T) {
+	negative := -time.Nanosecond
+	for name, cfg := range map[string]Config{
+		"environment absent":  {},
+		"environment unknown": {Environment: Environment(255)},
+		"port":                {Environment: Sandbox, DevicePort: 80},
+		"request":             {Environment: Sandbox, RequestTimeout: &negative},
+		"dial":                {Environment: Sandbox, Transport: TransportConfig{DialTimeout: &negative}},
+		"idle":                {Environment: Sandbox, Transport: TransportConfig{IdleConnTimeout: &negative}},
+		"read idle":           {Environment: Sandbox, Transport: TransportConfig{HTTP2: HTTP2Config{ReadIdleTimeout: &negative}}},
+		"write byte":          {Environment: Sandbox, Transport: TransportConfig{HTTP2: HTTP2Config{WriteByteTimeout: &negative}}},
+		"ping negative":       {Environment: Sandbox, Transport: TransportConfig{HTTP2: HTTP2Config{PingTimeout: &negative}}},
+		"ping zero":           {Environment: Sandbox, Transport: TransportConfig{HTTP2: HTTP2Config{PingTimeout: new(time.Duration(0))}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := makeTransport(&tls.Config{}, cfg); err == nil {
+				t.Fatal("invalid config accepted")
+			}
+		})
+	}
+	for _, port := range []uint16{0, 443, 2197} {
+		if err := validateConfig(Config{Environment: Production, DevicePort: port}); err != nil {
+			t.Fatal(err)
 		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
-	roots := server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
-	var verified atomic.Int32
-	sharedTLS := &tls.Config{RootCAs: roots, NextProtos: []string{"h2", "http/1.1"}, VerifyConnection: func(tls.ConnectionState) error { verified.Add(1); return nil }}
-	started := make(chan struct{})
-	shortDial := func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
-		close(started)
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	var shortTLS, longTLS *tls.Config
-	short := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(sharedTLS), apns.WithDialTimeout(20*time.Millisecond), apns.WithDialTLSContext(shortDial), apns.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
-		shortTLS = base.(*http.Transport).TLSClientConfig
-		return base
-	}))
-	long := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(sharedTLS), apns.WithDialTimeout(time.Second), apns.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
-		longTLS = base.(*http.Transport).TLSClientConfig
-		return base
-	}))
-	defer short.CloseIdleConnections()
-	defer long.CloseIdleConnections()
-	if shortTLS == longTLS || shortTLS == sharedTLS || longTLS == sharedTLS {
-		t.Fatal("clients share mutable TLS configuration")
-	}
-	if sharedTLS.MinVersion != 0 {
-		t.Fatal("constructor changed caller's TLS configuration")
-	}
-	shortResult := make(chan error, 1)
-	go func() { _, err := short.Push(context.Background(), mockNotification()); shortResult <- err }()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("short client's dialer did not start")
-	}
-	response, err := long.Push(context.Background(), mockNotification())
-	if err != nil || response == nil || !response.Success() {
-		t.Fatalf("independent default dialer = %v, %v", response, err)
-	}
-	if err := <-shortResult; !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("short dialer = %v, want deadline exceeded", err)
-	}
-	if verified.Load() != 1 {
-		t.Errorf("custom TLS verification calls = %d, want 1", verified.Load())
-	}
-	if len(sharedTLS.NextProtos) != 2 || sharedTLS.NextProtos[0] != "h2" || sharedTLS.NextProtos[1] != "http/1.1" {
-		t.Fatalf("constructor or transport changed caller's ALPN settings: %v", sharedTLS.NextProtos)
 	}
 }
 
-func TestClientManagerForwardsClientOptions(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(200 * time.Millisecond):
-			w.WriteHeader(http.StatusOK)
-		case <-r.Context().Done():
-		}
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
-	var transport *http.Transport
-	manager, err := apns.NewClientManager(apns.ManagerConfig{Host: server.URL, ClientOptions: []apns.ClientOption{
-		apns.WithTimeout(20 * time.Millisecond), apns.WithReadIdleTimeout(0), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig),
-		apns.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper { transport = base.(*http.Transport); return base }),
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, err := manager.Get(mockCert())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer manager.CloseIdleConnections()
-	if client.Host() != server.URL || transport == nil || transport.HTTP2.SendPingTimeout != 0 {
-		t.Fatalf("manager did not apply transport options: client=%v transport=%v", client, transport)
-	}
-	if _, err := client.Push(context.Background(), mockNotification()); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("manager client timeout = %v, want deadline exceeded", err)
-	}
-}
-
-func TestTLSConfigVerificationCannotDisableHTTP2(t *testing.T) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("non-HTTP/2 endpoint received a push") }))
-	server.TLS = &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
-		cfg := server.TLS.Clone()
-		cfg.GetConfigForClient = nil
-		cfg.NextProtos = nil
-		return cfg, nil
+func TestTransportClonesConfigurationAndMapsHTTP2(t *testing.T) {
+	roots, proxyRoots := x509.NewCertPool(), x509.NewCertPool()
+	calls := 0
+	cfg := Config{Environment: Sandbox, Transport: TransportConfig{
+		RootCAs: roots, ProxyRootCAs: proxyRoots,
+		DialTimeout: new(3 * time.Second), IdleConnTimeout: new(4 * time.Second),
+		HTTP2: HTTP2Config{ReadIdleTimeout: new(5 * time.Second), PingTimeout: new(6 * time.Second), WriteByteTimeout: new(7 * time.Second), StrictMaxConcurrentRequests: true, CountError: func(string) { calls++ }},
 	}}
-	server.StartTLS()
-	defer server.Close()
-	var verified atomic.Int32
-	client := mustTokenClient(t, mockToken(), apns.WithHost(server.URL), apns.WithTLSConfig(&tls.Config{
-		RootCAs:          server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs,
-		VerifyConnection: func(tls.ConnectionState) error { verified.Add(1); return nil },
-	}))
-	defer client.CloseIdleConnections()
-	if _, err := client.Push(context.Background(), mockNotification()); !errors.Is(err, apns.ErrHTTP2Required) {
-		t.Fatalf("push error = %v, want HTTP/2 rejection", err)
+	origin := &tls.Config{}
+	tr, err := makeTransport(origin, cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if verified.Load() != 1 {
-		t.Fatal("custom TLS verifier did not run")
+	if tr.TLSClientConfig == origin || tr.TLSClientConfig.RootCAs == roots {
+		t.Fatal("mutable TLS input retained")
 	}
-}
-
-func TestClientManagerRejectsSharedHTTPClient(t *testing.T) {
-	manager, err := apns.NewClientManager(apns.ManagerConfig{Host: apns.HostDevelopment, ClientOptions: []apns.ClientOption{apns.WithHTTPClient(&http.Client{})}})
-	if err == nil || manager != nil {
-		t.Fatalf("constructor = %v, %v, want shared-client error", manager, err)
+	if origin.MinVersion != 0 || len(origin.NextProtos) != 0 {
+		t.Fatal("caller TLS settings mutated")
+	}
+	if tr.TLSHandshakeTimeout != 3*time.Second || tr.IdleConnTimeout != 4*time.Second || tr.HTTP2.SendPingTimeout != 5*time.Second || tr.HTTP2.PingTimeout != 6*time.Second || tr.HTTP2.WriteByteTimeout != 7*time.Second || !tr.HTTP2.StrictMaxConcurrentRequests {
+		t.Fatal("configuration not applied")
+	}
+	tr.HTTP2.CountError("test")
+	if calls != 1 {
+		t.Fatal("CountError was not forwarded")
+	}
+	if tr.TLSClientConfig.MinVersion != tls.VersionTLS12 || len(tr.TLSClientConfig.NextProtos) != 1 || tr.TLSClientConfig.NextProtos[0] != "h2" {
+		t.Fatal("TLS policy not installed")
+	}
+	if tr.TLSClientConfig.RootCAs == proxyRoots {
+		t.Fatal("proxy roots selected for origin")
 	}
 }

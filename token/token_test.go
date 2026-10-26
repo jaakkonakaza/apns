@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +36,8 @@ func TestValidTokenFromP8Bytes(t *testing.T) {
 
 func TestNoSuchFileP8File(t *testing.T) {
 	token, err := AuthKeyFromFile("")
-	if got, want := err.Error(), errors.New("open : no such file or directory").Error(); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
+	if !errors.Is(err, os.ErrNotExist) || err.Error() != "token: cannot read signing key" {
+		t.Errorf("unexpected file error: %v", err)
 	}
 	if got := token; got != nil {
 		t.Errorf("got %v, want nil", got)
@@ -191,54 +192,6 @@ func TestBearerSignsToken(t *testing.T) {
 	}
 }
 
-func TestRestoreReusesFreshBearer(t *testing.T) {
-	key, err := AuthKeyFromFile("testdata/authkey-valid.p8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider := &Token{authKey: key, identity: Identity{KeyID: "KEY", TeamID: "TEAM"}}
-	if !provider.IssuedAt().IsZero() {
-		t.Fatal("new token reports an issue time")
-	}
-	issuedAt := time.Now().Add(-time.Minute).Truncate(time.Second)
-	provider.Restore("cached.bearer.value", issuedAt)
-	if bearer, err := provider.Bearer(); err != nil || bearer != "cached.bearer.value" {
-		t.Fatalf("Bearer() = %q, %v, want restored bearer", bearer, err)
-	}
-	if !provider.IssuedAt().Equal(issuedAt) {
-		t.Errorf("IssuedAt() = %v, want %v", provider.IssuedAt(), issuedAt)
-	}
-}
-
-func TestRestoreReplacesExpiredBearer(t *testing.T) {
-	key, err := AuthKeyFromFile("testdata/authkey-valid.p8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider := &Token{authKey: key, identity: Identity{KeyID: "KEY", TeamID: "TEAM"}}
-	provider.Restore("stale.bearer.value", time.Now().Add(-TokenTimeout))
-	bearer, err := provider.Bearer()
-	if err != nil || bearer == "stale.bearer.value" {
-		t.Fatalf("Bearer() = %q, %v, want a newly signed bearer", bearer, err)
-	}
-	if time.Since(provider.IssuedAt()) > time.Minute {
-		t.Errorf("IssuedAt() = %v, want now", provider.IssuedAt())
-	}
-}
-
-func TestRestoreIgnoresUnusableIssueTimes(t *testing.T) {
-	for name, issuedAt := range map[string]time.Time{
-		"future":  time.Now().Add(time.Hour),
-		"expired": time.Now().Add(-TokenTimeout),
-	} {
-		provider := &Token{}
-		provider.Restore("cached.bearer.value", issuedAt)
-		if provider.bearer != "" {
-			t.Errorf("%s: Restore cached a bearer", name)
-		}
-	}
-}
-
 func TestInvalidate(t *testing.T) {
 	key, err := AuthKeyFromFile("testdata/authkey-valid.p8")
 	if err != nil {
@@ -264,9 +217,15 @@ func TestInvalidate(t *testing.T) {
 		t.Error("Invalidate kept a rejected token older than 20 minutes")
 	}
 
-	restored := &Token{authKey: key}
-	restored.Restore("restored", time.Now())
-	restored.Invalidate("restored")
+	restored, err := New(key, "KEY", "TEAM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := signSnapshot(t, key, `{"alg":"ES256","kid":"KEY"}`, `{"iss":"TEAM","iat":`+strconv.FormatInt(time.Now().Unix(), 10)+`}`)
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	restored.Invalidate(snapshot.Bearer)
 	if restored.bearer != "" {
 		t.Error("Invalidate kept a rejected restored token")
 	}

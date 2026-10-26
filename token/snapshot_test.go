@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json/v2"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -118,14 +119,20 @@ func TestSnapshotKeepsRestoredPairsTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := Snapshot{Bearer: "first", IssuedAt: time.Now().Add(-2 * time.Minute).Truncate(time.Second)}
-	second := Snapshot{Bearer: "second", IssuedAt: first.IssuedAt.Add(time.Minute)}
-	provider.Restore(first.Bearer, first.IssuedAt)
+	first := signSnapshot(t, key, `{"alg":"ES256","kid":"key"}`, `{"iss":"team","iat":`+strconv.FormatInt(time.Now().Add(-2*time.Minute).Unix(), 10)+`}`)
+	second := signSnapshot(t, key, `{"alg":"ES256","kid":"key"}`, `{"iss":"team","iat":`+strconv.FormatInt(first.IssuedAt.Add(time.Minute).Unix(), 10)+`}`)
+	if err := provider.Restore(first); err != nil {
+		t.Fatal(err)
+	}
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		for range 1000 {
-			provider.Restore(first.Bearer, first.IssuedAt)
-			provider.Restore(second.Bearer, second.IssuedAt)
+			if err := provider.Restore(first); err != nil {
+				t.Error(err)
+			}
+			if err := provider.Restore(second); err != nil {
+				t.Error(err)
+			}
 		}
 	})
 	for range 4 {

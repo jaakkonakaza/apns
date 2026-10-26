@@ -8,6 +8,7 @@ import (
 
 	"github.com/jaakkonakaza/apns"
 	"github.com/jaakkonakaza/apns/certificate"
+	"github.com/jaakkonakaza/apns/payload"
 )
 
 func main() {
@@ -32,18 +33,9 @@ func run() error {
 		return fmt.Errorf("load certificate: %w", err)
 	}
 
-	notification := &apns.Notification{}
-	notification.DeviceToken = *token
-	notification.Topic = *topic
-	notification.PushType = apns.PushTypeAlert
-	notification.Payload = []byte(`{
-			"aps" : {
-				"alert" : "Hello!"
-			}
-		}
-	`)
+	notification := apns.Request{DeviceToken: *token, Topic: *topic, PushType: apns.PushTypeAlert, Payload: payload.Notification{APS: payload.APS{Alert: &payload.Alert{Body: "Hello!"}}}}
 
-	client, err := apns.NewClient(cert, apns.WithHost(apns.HostProduction))
+	client, err := apns.NewCertificateClient(cert, apns.Config{Environment: apns.Production})
 	if err != nil {
 		return err
 	}
@@ -53,11 +45,8 @@ func run() error {
 		return fmt.Errorf("push notification: %w", err)
 	}
 
-	if _, err := fmt.Printf("%v %v %v\n", res.StatusCode, res.APNSID, res.Reason); err != nil {
+	if _, err := fmt.Printf("%v %v\n", res.StatusCode, res.APNSID); err != nil {
 		return err
-	}
-	if !res.Success() {
-		return fmt.Errorf("APNs rejected notification: %s", res.Reason)
 	}
 	return nil
 }

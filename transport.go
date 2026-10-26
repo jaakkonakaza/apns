@@ -3,14 +3,16 @@ package apns
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"reflect"
 	"sync"
 	"time"
+
+	"github.com/jaakkonakaza/apns/internal/nilcheck"
 )
 
 // pushTarget identifies the APNs origin of a push. The transport uses it to
@@ -19,7 +21,7 @@ import (
 type pushTarget struct {
 	addr      string
 	plaintext bool
-	proxy     *proxyDialBudget
+	proxy     *proxyDialBudget // nil unless the client has a proxy
 }
 
 // proxyDialBudget bounds the complete proxy connection establishment. net/http times
@@ -59,8 +61,8 @@ func (target pushTarget) dialProxy(ctx context.Context, timeout time.Duration, d
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	conn, err := dial(ctx)
-	if err != nil {
-		return nil, err
+	if err != nil || target.proxy == nil {
+		return conn, err
 	}
 	if err := target.proxy.limit(conn, deadline); err != nil {
 		_ = conn.Close()
@@ -76,35 +78,54 @@ var errNoPushTarget = errors.New("apns: dial is missing its push target")
 
 // ErrHTTP2Required is returned when the default transport would reach APNs
 // over anything other than HTTP/2 over TLS.
-// Use WithHTTPClient to supply a client with a different transport policy.
 var ErrHTTP2Required = errors.New("apns: HTTP/2 over TLS is required")
 
-// newTransport returns a transport that only speaks HTTP/2 over TLS to APNs.
-// Origin handshakes offer only h2 and fail unless h2 is negotiated, including
-// handshakes net/http performs itself through proxies.
-func newTransport(tlsConfig *tls.Config, config clientConfig) *http.Transport {
-	if tlsConfig.MinVersion < tls.VersionTLS12 {
-		tlsConfig.MinVersion = tls.VersionTLS12
+// makeTransport owns the origin and HTTPS-proxy TLS handshakes. Only the
+// origin receives authentication certificates and must negotiate h2.
+func makeTransport(originTLS *tls.Config, cfg Config) (*http.Transport, error) {
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
 	}
-	verify := tlsConfig.VerifyConnection
-	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
-		if verify != nil {
-			if err := verify(state); err != nil {
-				return err
-			}
+	tlsConfig := originTLS.Clone()
+	tlsConfig.MinVersion = tls.VersionTLS12
+	tlsConfig.NextProtos = []string{"h2"}
+	tlsConfig.RootCAs = cloneRoots(cfg.Transport.RootCAs)
+	tlsConfig.VerifyConnection = verifyHTTP2
+	proxyRoots := cloneRoots(cfg.Transport.ProxyRootCAs)
+	dialTimeout := durationOr(cfg.Transport.DialTimeout, 20*time.Second)
+	rawDial := cfg.Transport.DialContext
+	if rawDial == nil {
+		rawDial = (&net.Dialer{KeepAlive: 15 * time.Second}).DialContext
+	}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := rawDial(ctx, network, addr)
+		if err != nil {
+			return nil, err
 		}
-		return verifyHTTP2(state)
+		if nilcheck.IsNil(conn) {
+			return nil, errors.New("apns: raw dialer returned a nil connection")
+		}
+		if state, ok := conn.(interface{ ConnectionState() tls.ConnectionState }); ok && state.ConnectionState().HandshakeComplete {
+			_ = conn.Close()
+			return nil, errors.New("apns: raw dialer returned a handshaken TLS connection")
+		}
+		return conn, nil
 	}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP2(true)
-	netDialer := &net.Dialer{Timeout: config.dialTimeout, KeepAlive: config.tcpKeepAlive}
 	transport := &http.Transport{
-		TLSHandshakeTimeout: config.dialTimeout,
-		IdleConnTimeout:     config.idleConnTimeout,
+		TLSHandshakeTimeout: dialTimeout,
+		IdleConnTimeout:     durationOr(cfg.Transport.IdleConnTimeout, 0),
 		TLSClientConfig:     tlsConfig,
-		Proxy:               config.proxy,
+		Proxy:               cfg.Transport.Proxy,
 		Protocols:           protocols,
-		HTTP2:               &http.HTTP2Config{SendPingTimeout: config.readIdleTimeout},
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout:             durationOr(cfg.Transport.HTTP2.ReadIdleTimeout, 15*time.Second),
+			PingTimeout:                 durationOr(cfg.Transport.HTTP2.PingTimeout, 15*time.Second),
+			WriteByteTimeout:            durationOr(cfg.Transport.HTTP2.WriteByteTimeout, 0),
+			StrictMaxConcurrentRequests: cfg.Transport.HTTP2.StrictMaxConcurrentRequests,
+			CountError:                  cfg.Transport.HTTP2.CountError,
+		},
 	}
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		target, ok := ctx.Value(pushTargetKey{}).(pushTarget)
@@ -114,12 +135,11 @@ func newTransport(tlsConfig *tls.Config, config clientConfig) *http.Transport {
 		if target.plaintext || addr == target.addr {
 			return nil, ErrHTTP2Required
 		}
-		return target.dialProxy(ctx, config.dialTimeout, func(ctx context.Context) (net.Conn, error) {
-			return netDialer.DialContext(ctx, network, addr)
+		return target.dialProxy(ctx, dialTimeout, func(ctx context.Context) (net.Conn, error) {
+			return dial(ctx, network, addr)
 		})
 	}
 	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		cfg := transport.TLSClientConfig.Clone()
 		target, ok := ctx.Value(pushTargetKey{}).(pushTarget)
 		if !ok {
 			return nil, errNoPushTarget
@@ -128,47 +148,48 @@ func newTransport(tlsConfig *tls.Config, config clientConfig) *http.Transport {
 			return nil, ErrHTTP2Required
 		}
 		origin := addr == target.addr
+		config := tlsConfig.Clone()
 		if !origin {
-			// net/http sends CONNECT using HTTP/1.1 on the HTTPS proxy connection.
-			cfg = &tls.Config{
-				RootCAs:    tlsConfig.RootCAs,
-				MinVersion: tlsConfig.MinVersion,
-				NextProtos: []string{"http/1.1"},
-			}
+			config = &tls.Config{RootCAs: proxyRoots, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
 		}
-		if cfg.ServerName == "" {
-			host, _, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			cfg.ServerName = host
-		}
-		if !origin {
-			return target.dialProxy(ctx, config.dialTimeout, func(ctx context.Context) (net.Conn, error) {
-				return dialTLSContext(ctx, config, network, addr, cfg)
-			})
-		}
-		if config.dialTimeout != 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, config.dialTimeout)
-			defer cancel()
-		}
-		conn, err := dialTLSContext(ctx, config, network, addr, cfg)
+		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
-		// Custom hooks may ignore cfg, so check the negotiated protocol here too.
-		state, ok := conn.(interface{ ConnectionState() tls.ConnectionState })
-		if !ok || state.ConnectionState().NegotiatedProtocol != "h2" {
-			_ = conn.Close()
-			return nil, ErrHTTP2Required
+		config.ServerName = host
+		tlsDial := func(ctx context.Context) (net.Conn, error) {
+			conn, err := dial(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			tlsConn := tls.Client(conn, config)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				_ = conn.Close()
+				return nil, err
+			}
+			return tlsConn, nil
 		}
-		return conn, nil
+		if !origin {
+			return target.dialProxy(ctx, dialTimeout, tlsDial)
+		}
+		if dialTimeout != 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, dialTimeout)
+			defer cancel()
+		}
+		return tlsDial(ctx)
 	}
-	return transport
+	return transport, nil
 }
 
-func newPushTarget(u *url.URL) pushTarget {
+func cloneRoots(pool *x509.CertPool) *x509.CertPool {
+	if pool == nil {
+		return nil
+	}
+	return pool.Clone()
+}
+
+func newPushTarget(u *url.URL, proxied bool) pushTarget {
 	port := u.Port()
 	if port == "" {
 		port = "443"
@@ -176,11 +197,11 @@ func newPushTarget(u *url.URL) pushTarget {
 			port = "80"
 		}
 	}
-	return pushTarget{
-		addr:      net.JoinHostPort(u.Hostname(), port),
-		plaintext: u.Scheme != "https",
-		proxy:     &proxyDialBudget{},
+	target := pushTarget{addr: net.JoinHostPort(u.Hostname(), port), plaintext: u.Scheme != "https"}
+	if proxied {
+		target.proxy = &proxyDialBudget{}
 	}
+	return target
 }
 
 func verifyHTTP2(state tls.ConnectionState) error {
@@ -190,30 +211,14 @@ func verifyHTTP2(state tls.ConnectionState) error {
 	return nil
 }
 
-func dialTLSContext(ctx context.Context, config clientConfig, network, addr string, cfg *tls.Config) (net.Conn, error) {
-	var conn net.Conn
-	var err error
-	if config.dialTLS != nil {
-		conn, err = config.dialTLS(ctx, network, addr, cfg)
-	} else {
-		dialer := &tls.Dialer{
-			NetDialer: &net.Dialer{KeepAlive: config.tcpKeepAlive},
-			Config:    cfg,
-		}
-		conn, err = dialer.DialContext(ctx, network, addr)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if conn == nil || reflect.ValueOf(conn).Kind() == reflect.Pointer && reflect.ValueOf(conn).IsNil() {
-		return nil, errors.New("apns: TLS dialer returned a nil connection")
-	}
-	return conn, nil
-}
-
-func prepareRequest(request *http.Request) *http.Request {
-	target := newPushTarget(request.URL)
+// prepareRequest installs the proxy deadline trace only when proxied, so
+// direct sends on warm connections pay for the target alone.
+func prepareRequest(request *http.Request, proxied bool) *http.Request {
+	target := newPushTarget(request.URL, proxied)
 	ctx := context.WithValue(request.Context(), pushTargetKey{}, target)
+	if !proxied {
+		return request.WithContext(ctx)
+	}
 	// net/http also calls the trace after an origin handshake through a proxy.
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		TLSHandshakeDone: func(state tls.ConnectionState, err error) {

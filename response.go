@@ -1,6 +1,7 @@
 package apns
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -12,146 +13,161 @@ const StatusAccepted = http.StatusOK
 // https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns
 const (
 	// 400 The collapse identifier exceeds the maximum allowed size
-	ReasonBadCollapseID = "BadCollapseId"
+	ReasonBadCollapseID Reason = "BadCollapseId"
 
 	// 400 The specified device token was bad. Verify that the request contains a
 	// valid token and that the token matches the environment.
-	ReasonBadDeviceToken = "BadDeviceToken"
+	ReasonBadDeviceToken Reason = "BadDeviceToken"
 
 	// 400 The apns-expiration value is bad.
-	ReasonBadExpirationDate = "BadExpirationDate"
+	ReasonBadExpirationDate Reason = "BadExpirationDate"
 
 	// 400 The apns-id value is bad.
-	ReasonBadMessageID = "BadMessageId"
+	ReasonBadMessageID Reason = "BadMessageId"
 
 	// 400 The apns-priority value is bad.
-	ReasonBadPriority = "BadPriority"
+	ReasonBadPriority Reason = "BadPriority"
 
 	// 400 The apns-topic was invalid.
-	ReasonBadTopic = "BadTopic"
+	ReasonBadTopic Reason = "BadTopic"
 
 	// 400 The device token does not match the specified topic.
-	ReasonDeviceTokenNotForTopic = "DeviceTokenNotForTopic"
+	ReasonDeviceTokenNotForTopic Reason = "DeviceTokenNotForTopic"
 
 	// 400 One or more headers were repeated.
-	ReasonDuplicateHeaders = "DuplicateHeaders"
+	ReasonDuplicateHeaders Reason = "DuplicateHeaders"
 
 	// 400 Idle time out.
-	ReasonIdleTimeout = "IdleTimeout"
+	ReasonIdleTimeout Reason = "IdleTimeout"
 
 	// 400 The apns-push-type value is invalid.
-	ReasonInvalidPushType = "InvalidPushType"
+	ReasonInvalidPushType Reason = "InvalidPushType"
 
 	// 400 The device token is not specified in the request :path. Verify that the
 	// :path header contains the device token.
-	ReasonMissingDeviceToken = "MissingDeviceToken"
+	ReasonMissingDeviceToken Reason = "MissingDeviceToken"
 
 	// 400 The apns-topic header of the request was not specified and was
 	// required. The apns-topic header is mandatory when the client is connected
 	// using a certificate that supports multiple topics.
-	ReasonMissingTopic = "MissingTopic"
+	ReasonMissingTopic Reason = "MissingTopic"
 
 	// 400 The message payload was empty.
-	ReasonPayloadEmpty = "PayloadEmpty"
+	ReasonPayloadEmpty Reason = "PayloadEmpty"
 
 	// 400 Pushing to this topic is not allowed.
-	ReasonTopicDisallowed = "TopicDisallowed"
+	ReasonTopicDisallowed Reason = "TopicDisallowed"
 
 	// 403 The certificate was bad.
-	ReasonBadCertificate = "BadCertificate"
+	ReasonBadCertificate Reason = "BadCertificate"
 
 	// 403 The client certificate was for the wrong environment.
-	ReasonBadCertificateEnvironment = "BadCertificateEnvironment"
+	ReasonBadCertificateEnvironment Reason = "BadCertificateEnvironment"
 
 	// 403 The provider token is stale and a new token should be generated.
-	ReasonExpiredProviderToken = "ExpiredProviderToken"
+	ReasonExpiredProviderToken Reason = "ExpiredProviderToken"
 
 	// 403 The specified action is not allowed.
-	ReasonForbidden = "Forbidden"
+	ReasonForbidden Reason = "Forbidden"
 
 	// 403 The provider token is not valid or the token signature could not be
 	// verified.
-	ReasonInvalidProviderToken = "InvalidProviderToken"
+	ReasonInvalidProviderToken Reason = "InvalidProviderToken"
 
 	// 403 No provider certificate was used to connect to APNs and Authorization
 	// header was missing or no provider token was specified.
-	ReasonMissingProviderToken = "MissingProviderToken"
+	ReasonMissingProviderToken Reason = "MissingProviderToken"
 
 	// 403 The key ID in the provider token isn't related to the key ID of the
 	// token used in the first push of this connection. To use this token, open
 	// a new connection.
-	ReasonUnrelatedKeyIDInToken = "UnrelatedKeyIdInToken"
+	ReasonUnrelatedKeyIDInToken Reason = "UnrelatedKeyIdInToken"
 
 	// 403 The key ID in the provider token doesn't match the environment.
-	ReasonBadEnvironmentKeyIDInToken = "BadEnvironmentKeyIdInToken"
+	ReasonBadEnvironmentKeyIDInToken Reason = "BadEnvironmentKeyIdInToken"
 
 	// 404 The request contained a bad :path value.
-	ReasonBadPath = "BadPath"
+	ReasonBadPath Reason = "BadPath"
 
 	// 405 The specified :method was not POST.
-	ReasonMethodNotAllowed = "MethodNotAllowed"
+	ReasonMethodNotAllowed Reason = "MethodNotAllowed"
 
 	// 410 The device token has expired.
-	ReasonExpiredToken = "ExpiredToken"
+	ReasonExpiredToken Reason = "ExpiredToken"
 
 	// 410 The device token is inactive for the specified topic.
-	ReasonUnregistered = "Unregistered"
+	ReasonUnregistered Reason = "Unregistered"
 
 	// 413 The message payload was too large. The limit is 4 KB (4096 bytes),
 	// or 5 KB (5120 bytes) for VoIP and broadcast notifications.
-	ReasonPayloadTooLarge = "PayloadTooLarge"
+	ReasonPayloadTooLarge Reason = "PayloadTooLarge"
 
 	// 429 The provider token is being updated too often. Update the
 	// authentication token no more than once every 20 minutes.
-	ReasonTooManyProviderTokenUpdates = "TooManyProviderTokenUpdates"
+	ReasonTooManyProviderTokenUpdates Reason = "TooManyProviderTokenUpdates"
 
 	// 429 Too many requests were made consecutively to the same device token.
-	ReasonTooManyRequests = "TooManyRequests"
+	ReasonTooManyRequests Reason = "TooManyRequests"
 
 	// 500 An internal server error occurred.
-	ReasonInternalServerError = "InternalServerError"
+	ReasonInternalServerError Reason = "InternalServerError"
 
 	// 503 The service is unavailable.
-	ReasonServiceUnavailable = "ServiceUnavailable"
+	ReasonServiceUnavailable Reason = "ServiceUnavailable"
 
 	// 503 The server is shutting down.
-	ReasonShutdown = "Shutdown"
+	ReasonShutdown Reason = "Shutdown"
 )
 
-// Response represents a result from the APNs gateway indicating whether a
-// notification was accepted or rejected and (if applicable) the metadata
-// surrounding the rejection.
+// Reason is an APNs rejection reason. Unknown values remain available for inspection.
+type Reason string
+
+// Response is an owned snapshot of APNs response metadata. Acceptance does not
+// establish delivery. Header and identifiers may contain sensitive diagnostic data.
 type Response struct {
-	// Header contains the response headers, including any retry scheduling metadata.
-	Header http.Header
-
-	// The HTTP status code returned by APNs.
-	// A 200 value indicates that APNs accepted the notification. It does not
-	// confirm delivery to the device.
-	// For the other status codes, see the Reason constants.
-	StatusCode int
-
-	// The APNs error string indicating the reason for the notification failure (if
-	// any). The error code is specified as a string. For a list of possible
-	// values, see the Reason constants above.
-	// If the notification was accepted, this value will be "".
-	Reason string
-
-	// The APNs APNSID value from the Notification. If you didn't set an APNSID on the
-	// Notification, this will be a new unique UUID which has been created by APNs.
-	APNSID string
-
-	// If the value of StatusCode is 410, this is the last time at which APNs
-	// confirmed that the device token was no longer valid for the topic.
-	Timestamp time.Time
-
-	// An identifier that is only available in the Development environment for
-	// device notifications. Use this to query Delivery Log information for the
-	// corresponding notification in Push Notifications Console.
+	StatusCode   int
+	APNSID       string
 	APNSUniqueID string
+	RequestID    string
+	Header       http.Header
 }
 
-// Success reports whether APNs accepted the request, without confirming delivery.
-func (c *Response) Success() bool {
-	return c.StatusCode >= 200 && c.StatusCode < 300
+// Rejection reports an actual HTTP 4xx or 5xx response. Reason and unwrapped
+// causes are diagnostic data and need redaction before logging.
+type Rejection struct {
+	Response                 Response
+	Reason                   Reason
+	DeviceTokenInvalidatedAt time.Time
+	cause                    error
+}
+
+func (e *Rejection) Error() string {
+	return fmt.Sprintf("apns: request rejected (status %d)", e.Response.StatusCode)
+}
+func (e *Rejection) Unwrap() error { return e.cause }
+
+// ResponseError reports an unexpected status or an incomplete response.
+type ResponseError struct {
+	Response Response
+	cause    error
+}
+
+func (e *ResponseError) Error() string {
+	return fmt.Sprintf("apns: invalid response (status %d)", e.Response.StatusCode)
+}
+func (e *ResponseError) Unwrap() error { return e.cause }
+
+// operationError deliberately omits arbitrary diagnostic text from Error.
+type operationError struct {
+	operation string
+	cause     error
+}
+
+func (e *operationError) Error() string { return "apns: " + e.operation + " failed" }
+func (e *operationError) Unwrap() error { return e.cause }
+func safeError(operation string, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &operationError{operation: operation, cause: cause}
 }

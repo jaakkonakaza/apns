@@ -2,14 +2,23 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jaakkonakaza/apns"
 )
@@ -75,16 +84,15 @@ func TestCLISend(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	server.EnableHTTP2 = true
-	server.StartTLS()
+	startTestTLS(t, server)
 	defer server.Close()
 
 	var output bytes.Buffer
 	args := []string{"--certificate-path=../../certificate/testdata/certificate-valid.pem", "--topic=com.example"}
-	if err := run(args, strings.NewReader("aabbcc "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard, apns.WithHost(server.URL),
-		apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
+	if err := run(args, strings.NewReader("aabbcc "+`{"aps":{"alert":"hello world"}}`+"\n"), &output, io.Discard, testConfig(server)); err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != "200: ''\n" {
+	if output.String() != "200\n" {
 		t.Fatalf("output = %q", output.String())
 	}
 }
@@ -115,14 +123,14 @@ func TestTokenAuthenticationAndPriority(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			server.EnableHTTP2 = true
-			server.StartTLS()
+			startTestTLS(t, server)
 			defer server.Close()
 			args := []string{"--auth-key-path=../../token/testdata/authkey-valid.p8", "--key-id=KEY123", "--team-id=TEAM123", "--topic=com.example", "--push-type=" + tc.pushType, "--priority=" + tc.priority}
 			var output bytes.Buffer
-			if err := run(args, strings.NewReader("aabbcc {}\n"), &output, io.Discard, apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig)); err != nil {
+			if err := run(args, strings.NewReader("aabbcc {}\n"), &output, io.Discard, testConfig(server)); err != nil {
 				t.Fatal(err)
 			}
-			if got := output.String(); got != "200: ''\n" {
+			if got := output.String(); got != "200\n" {
 				t.Fatalf("output = %q", got)
 			}
 		})
@@ -177,16 +185,76 @@ func TestCLIReportsRejectedNotifications(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	server.EnableHTTP2 = true
-	server.StartTLS()
+	startTestTLS(t, server)
 	defer server.Close()
 	args := []string{"--auth-key-path=../../token/testdata/authkey-valid.p8", "--key-id=KEY123", "--team-id=TEAM123", "--topic=com.example"}
 	var output bytes.Buffer
 	err := run(args, strings.NewReader("aabbcc {}\naabbcc {}\n"), &output, io.Discard,
-		apns.WithHost(server.URL), apns.WithTLSConfig(server.Client().Transport.(*http.Transport).TLSClientConfig))
+		testConfig(server))
 	if err == nil || err.Error() != "APNs rejected 1 of 2 notifications" {
 		t.Fatalf("run error = %v", err)
 	}
-	if requests.Load() != 2 || output.String() != "403: 'InvalidProviderToken'\n200: ''\n" {
+	if requests.Load() != 2 || output.String() != "403: 'InvalidProviderToken'\n200\n" {
 		t.Fatalf("requests = %d, output = %q", requests.Load(), output.String())
 	}
+}
+
+func TestCLIPrintsRejectionReasons(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"bad device token", http.StatusBadRequest, `{"reason":"BadDeviceToken"}`, "400: 'BadDeviceToken'\n"},
+		{"device token not for topic", http.StatusBadRequest, `{"reason":"DeviceTokenNotForTopic"}`, "400: 'DeviceTokenNotForTopic'\n"},
+		{"topic disallowed", http.StatusBadRequest, `{"reason":"TopicDisallowed"}`, "400: 'TopicDisallowed'\n"},
+		{"unregistered", http.StatusGone, `{"reason":"Unregistered","timestamp":1700000000000}`, "410: 'Unregistered' (invalidated at 2023-11-14T22:13:20Z)\n"},
+		{"no body", http.StatusInternalServerError, "", "500: ''\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			server.EnableHTTP2 = true
+			startTestTLS(t, server)
+			defer server.Close()
+			args := []string{"--auth-key-path=../../token/testdata/authkey-valid.p8", "--key-id=KEY123", "--team-id=TEAM123", "--topic=com.example"}
+			var output, diagnostics bytes.Buffer
+			err := run(args, strings.NewReader("aabbcc {}\n"), &output, &diagnostics, testConfig(server))
+			if err == nil || err.Error() != "APNs rejected 1 of 1 notifications" {
+				t.Fatalf("run error = %v", err)
+			}
+			if got := output.String(); got != tc.want {
+				t.Fatalf("output = %q, want %q", got, tc.want)
+			}
+			if diagnostics.Len() != 0 {
+				t.Fatalf("diagnostics = %q", diagnostics.String())
+			}
+		})
+	}
+}
+
+func startTestTLS(t *testing.T, server *httptest.Server) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), DNSNames: []string{"api.push.apple.com", "api.sandbox.push.apple.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	server.StartTLS()
+}
+
+func testConfig(server *httptest.Server) apns.Config {
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	return apns.Config{Environment: apns.Production, Transport: apns.TransportConfig{RootCAs: roots, DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}}}
 }

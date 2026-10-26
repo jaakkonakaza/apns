@@ -3,37 +3,37 @@ package apns_test
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/jaakkonakaza/apns"
+	"github.com/jaakkonakaza/apns/cache"
 	"github.com/jaakkonakaza/apns/certificate"
 	"github.com/jaakkonakaza/apns/payload"
 	"github.com/jaakkonakaza/apns/token"
 )
 
-func ExampleNotification() {
-	type progress struct {
-		Counter int    `json:"counter"`
-		Message string `json:"message"`
-	}
-	notification := &apns.Notification{
-		DeviceToken: "aabbcc",
-		Topic:       "com.example.app.push-type.liveactivity",
-		PushType:    apns.PushTypeLiveActivity,
-		Payload: payload.NewPayload().
-			ContentState(progress{Counter: 7, Message: "Arriving soon"}).
-			Event(payload.LiveActivityEventUpdate).
-			Timestamp(time.Unix(1700000000, 0)),
-	}
-	data, err := json.Marshal(notification)
+func ExampleRequest() {
+	body := payload.Notification{APS: payload.APS{Alert: &payload.Alert{Body: "Hello"}, Badge: new(0)}, Custom: map[string]any{"orderID": "123"}}
+	data, err := json.Marshal(body)
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	fmt.Println(string(data))
-	// Output: {"aps":{"content-state":{"counter":7,"message":"Arriving soon"},"event":"update","timestamp":1700000000}}
+	var decoded struct {
+		APS struct {
+			Badge int `json:"badge"`
+		}
+		OrderID string `json:"orderID"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		log.Print(err)
+		return
+	}
+	fmt.Println(decoded.APS.Badge, decoded.OrderID)
+	// Output: 0 123
 }
 
 func ExampleNewTokenClient() {
@@ -47,57 +47,45 @@ func ExampleNewTokenClient() {
 		log.Print(err)
 		return
 	}
-	client, err := apns.NewTokenClient(provider, apns.WithHost(apns.HostDevelopment))
+	client, err := apns.NewTokenClient(provider, apns.Config{Environment: apns.Sandbox})
 	if err != nil {
 		log.Print(err)
 		return
 	}
 	defer client.CloseIdleConnections()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	response, err := client.Push(ctx, &apns.Notification{
-		DeviceToken: "aabbcc",
-		Topic:       "com.example.app",
-		PushType:    apns.PushTypeAlert,
-		Payload:     payload.NewPayload().Alert("Hello"),
-	})
+	response, err := client.Push(context.Background(), apns.Request{DeviceToken: "aabbcc", Topic: "com.example.app", PushType: apns.PushTypeAlert, Payload: payload.Notification{APS: payload.APS{Alert: &payload.Alert{Body: "Hello"}}}})
 	if err != nil {
-		log.Print(err)
+		if rejection, ok := errors.AsType[*apns.Rejection](err); ok {
+			log.Printf("APNs rejected request (status %d)", rejection.Response.StatusCode)
+		} else {
+			log.Print(err)
+		}
 		return
 	}
-	fmt.Println(response.Success(), response.Reason)
+	fmt.Println("APNs accepted", response.APNSID)
 }
 
-func ExampleNewClient() {
+func ExampleNewCertificateClient() {
 	cert, err := certificate.FromPEMFile("provider.pem")
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	client, err := apns.NewClient(cert, apns.WithHost(apns.HostProduction))
+	client, err := apns.NewCertificateClient(cert, apns.Config{Environment: apns.Production})
 	if err != nil {
 		log.Print(err)
 		return
 	}
 	defer client.CloseIdleConnections()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	response, err := client.Push(ctx, &apns.Notification{
-		DeviceToken: "aabbcc",
-		Topic:       "com.example.app",
-		PushType:    apns.PushTypeBackground,
-		Payload:     payload.NewPayload().ContentAvailable(),
-	})
+	response, err := client.Push(context.Background(), apns.Request{DeviceToken: "aabbcc", Topic: "com.example.app", PushType: apns.PushTypeBackground, Payload: payload.Background{Custom: map[string]any{"revision": 7}}})
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	fmt.Println(response.Success(), response.Reason)
+	fmt.Println("APNs accepted", response.APNSID)
 }
 
-func ExampleBroadcastClient_CreateChannel() {
+func ExampleClient_CreateChannel() {
 	key, err := token.AuthKeyFromFile("AuthKey.p8")
 	if err != nil {
 		log.Print(err)
@@ -108,37 +96,32 @@ func ExampleBroadcastClient_CreateChannel() {
 		log.Print(err)
 		return
 	}
-	client, err := apns.NewBroadcastTokenClient(provider, apns.DevelopmentBroadcastEndpoints())
+	client, err := apns.NewTokenClient(provider, apns.Config{Environment: apns.Sandbox})
 	if err != nil {
 		log.Print(err)
 		return
 	}
 	defer client.CloseIdleConnections()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	channel, err := client.CreateChannel(ctx,
-		&apns.ChannelRequest{BundleID: "com.example.app"}, apns.MessageStorageNone)
+	channel, err := client.CreateChannel(context.Background(), apns.CreateChannelRequest{BundleID: "com.example.app", MessageStoragePolicy: apns.MessageStorageNone})
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	if !channel.Success() {
-		log.Print(channel.Reason)
-		return
+	// Publish only after the app subscribes to this channel.
+	type state struct {
+		Counter int `json:"counter"`
 	}
-	fmt.Println(channel.ChannelID)
-
-	deleted, err := client.DeleteChannel(ctx,
-		&apns.ChannelRequest{BundleID: "com.example.app", ChannelID: channel.ChannelID})
+	_, err = client.Broadcast(context.Background(), apns.BroadcastRequest{BundleID: "com.example.app", ChannelID: channel.ChannelID, MessageStoragePolicy: new(apns.MessageStorageNone), Payload: payload.ActivityUpdate[state]{Timestamp: time.Now(), State: state{Counter: 7}}})
 	if err != nil {
 		log.Print(err)
-		return
 	}
-	fmt.Println(deleted.Success(), deleted.Reason)
+	_, err = client.DeleteChannel(context.Background(), apns.DeleteChannelRequest{BundleID: "com.example.app", ChannelID: channel.ChannelID})
+	if err != nil {
+		log.Print(err)
+	}
 }
 
-func ExampleClientManager_RemoveByToken() {
+func Example_multipleIdentities() {
 	key, err := token.AuthKeyFromFile("AuthKey.p8")
 	if err != nil {
 		log.Print(err)
@@ -149,25 +132,23 @@ func ExampleClientManager_RemoveByToken() {
 		log.Print(err)
 		return
 	}
-	manager, err := apns.NewClientManager(apns.ManagerConfig{Host: apns.HostProduction})
+	clients, err := cache.New(cache.Config{Client: apns.Config{Environment: apns.Production}, MaxEntries: 16})
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	defer manager.CloseIdleConnections()
-	client, err := manager.GetByToken(provider)
+	defer clients.Clear()
+	client, err := clients.Token(provider)
 	if err != nil {
 		log.Print(err)
 		return
 	}
-
-	// Remove a cached connection when its credential or topic access changes.
-	removed, err := manager.RemoveByToken(provider)
+	removed, err := clients.RemoveToken(provider)
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	replacement, err := manager.GetByToken(provider)
+	replacement, err := clients.Token(provider)
 	if err != nil {
 		log.Print(err)
 		return
